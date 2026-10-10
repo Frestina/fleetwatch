@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.frestina.fleetwatch",
+  "name": "Fleetwatch",
+  "version": "0.1.0",
+  "author": "Frestina",
+  "license": "MIT",
+  "description": "Health of your machines at a glance: load, memory, disk, pending updates, failed units and crashes, checked locally and over ssh. The machines you watch can run any Linux; only this one needs Omarchy.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Fleetwatch.qml"
+  },
+  "barWidget": {
+    "displayName": "Fleetwatch",
+    "description": "Bar icon that lights up when one of your machines needs attention; click for details, right-click for the full table.",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 600
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 86400,
+        "step": 60,
+        "defaultValue": 600
+      }
+    ]
+  }
+}

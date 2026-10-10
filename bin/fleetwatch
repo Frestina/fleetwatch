@@ -1,0 +1,754 @@
+#!/usr/bin/env python3
+"""fleetwatch: one-screen health check of your machines.
+
+Runs a small collector script on each machine (locally for this one, over ssh
+for the rest) and prints a table: uptime, load, memory, disk, pending updates,
+reboot needed, failed systemd units and crashes in the last 7 days. Optional
+checks, an SSH agent and git repositories, are switched on in the config file.
+
+Your machines are listed in ~/.config/fleetwatch/hosts, one per line:
+
+    <label>  <ssh target>  [<hostname>]
+
+The line whose hostname matches this machine, or whose target is "local", runs
+locally, so the same file works from any of them. Everything else is reached
+with `ssh <target>`, so your ~/.ssh/config decides users, keys and ports.
+
+Optional settings go in ~/.config/fleetwatch/config as `key = value` lines:
+
+    ssh_options = -o IdentityAgent=none    extra options for polling ssh
+    agent_socket = ~/.ssh/agent.sock       SSH agent to check on this machine
+    forwarded_agent_socket = ~/.ssh/fwd.sock   agent to check on the others
+    repo = ~/dotfiles                      git repo to compare across machines;
+    repo = ~/Projects/app                  one line per repo, a column each
+
+Polling never forwards your agent and never prompts (BatchMode), so a machine
+that needs a password or key approval shows as unreachable.
+
+Both files are created on the first run if they are missing: the hosts file
+with this machine in it, the config with every setting commented out. Existing
+files are never replaced.
+
+Usage: fleetwatch [--json [--max-age SECONDS | --since EPOCH]] [LABEL...]
+       fleetwatch --edit hosts|config
+       fleetwatch --setup-with-agent
+       fleetwatch --dismiss-crashes LABEL ID...
+       fleetwatch --uninstall
+
+--json adds a "view" to each machine: its status (ok, warn, bad, down), the
+issues behind it and the table's display text. The bar widget shows that, so
+the rules for what counts as a problem live only here.
+
+--max-age reuses the last full --json result if it is younger than SECONDS.
+The bar runs one widget per monitor; a lock makes them share one collection.
+--since reuses it only if that collection started at or after EPOCH (Unix
+seconds), so a refresh-now sent to every monitor's widget collects once.
+
+--edit opens one of the two files in Omarchy's default editor.
+
+--dismiss-crashes hides those crashes (ids are "<time>-<pid>" from
+coredumpctl, as listed in --json) of the machine LABEL from now on; later
+crashes still show. Dismissals are kept on this machine only.
+
+--setup-with-agent starts your default coding agent (`omarchy agent`) with the
+guide in docs/AGENT_SETUP.md, to fill in the hosts file and settings with you.
+
+--uninstall lists what the plugin and its setup added, asks whether to remove
+all of it or only the plugin, and then runs `omarchy plugin remove`. It removes
+the three fleetwatch folders, the ~/.local/bin/fleetwatch link when it
+points at this plugin, and the border rule in ~/.config/hypr/hyprland.lua. The
+starship prompt is never edited; remove the hostname there yourself.
+"""
+
+import fcntl
+import json
+import os
+import re
+import shlex
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "fleetwatch"
+HOSTS_FILE = CONFIG_DIR / "hosts"
+CONFIG_FILE = CONFIG_DIR / "config"
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "fleetwatch"
+# Crashes dismissed from this machine's widget: {label: ["<time>-<pid>", ...]}.
+DISMISSED_FILE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "fleetwatch" / "dismissed-crashes.json"
+# The plugin folder; resolve() follows a ~/.local/bin/fleetwatch link back here.
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+PLUGIN_ID = "io.github.frestina.fleetwatch"
+TIMEOUT = 45  # checkupdates and the AUR query hit the network
+CONFIG_KEYS = {"ssh_options", "agent_socket", "forwarded_agent_socket", "repo"}
+
+COLLECTOR = r"""
+export LC_ALL=C
+kv() { printf '%s=%s\n' "$1" "$2"; }
+
+kv hostname "$(hostname)"
+kv uptime_s "$(cut -d. -f1 /proc/uptime)"
+kv load "$(cut -d' ' -f1 /proc/loadavg)"
+kv cpus "$(nproc)"
+kv mem_pct "$(awk '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%d", (t-a)*100/t}' /proc/meminfo)"
+kv disk_pct "$(df -P / | awk 'NR==2{sub("%","",$5); print $5}')"
+kv disk_free "$(df -Ph / | awk 'NR==2{print $4}')"
+
+# A kernel upgrade removes the running kernel's modules dir (Arch); Debian
+# drops a flag file instead.
+reboot=0
+[ -d "/usr/lib/modules/$(uname -r)" ] || [ -d "/lib/modules/$(uname -r)" ] || reboot=1
+[ -e /var/run/reboot-required ] && reboot=1
+kv reboot "$reboot"
+
+if command -v checkupdates >/dev/null; then
+	out=$(timeout 30 checkupdates 2>/dev/null); rc=$?
+	case $rc in 0) kv updates "$(printf '%s\n' "$out" | wc -l)" ;; 2) kv updates 0 ;; *) kv updates "?" ;; esac
+	if command -v yay >/dev/null; then
+		out=$(timeout 20 yay -Qua 2>/dev/null); rc=$?
+		[ $rc -le 1 ] && kv updates_aur "$(printf '%s' "$out" | grep -c .)" || kv updates_aur "?"
+	fi
+elif command -v apt >/dev/null; then
+	kv updates "$(apt list --upgradable 2>/dev/null | grep -c 'upgradable from')"
+fi
+
+kv failed "$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{printf "%s ", $1}')"
+kv failed_user "$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{printf "%s ", $1}')"
+
+command -v coredumpctl >/dev/null &&
+	kv crashes "$(coredumpctl list --since=-7d --json=short --no-pager 2>/dev/null | tr -d '\n')"
+
+# ssh-add -l exits 0 with keys, 1 when the agent has none (locked), 2 when
+# nothing answers.
+agent() {
+	[ -S "$1" ] || { echo none; return; }
+	n=$(SSH_AUTH_SOCK=$1 timeout 4 ssh-add -l 2>/dev/null | grep -c .); rc=$?
+	case $rc in 0|1) echo "$n" ;; 124) echo timeout ;; *) echo none ;; esac
+}
+[ -n "$AGENT_SOCK" ] && kv agent "$(agent "$AGENT_SOCK")"
+
+# Numbered like the config's repo lines. .git is a file in a worktree.
+i=0
+for repo in "${REPOS[@]}"; do
+	if [ -e "$repo/.git" ]; then
+		kv "repo${i}_head" "$(git -C "$repo" rev-parse HEAD)"
+		kv "repo${i}_dirty" "$(git -C "$repo" status --porcelain | grep -c .)"
+		kv "repo${i}_unpushed" "$(git -C "$repo" rev-list --count '@{u}..HEAD' 2>/dev/null || echo '?')"
+		kv "repo${i}_behind" "$(git -C "$repo" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo '?')"
+	fi
+	i=$((i + 1))
+done
+"""
+
+BASE_SSH_OPTS = [
+    "-T",
+    "-o", "BatchMode=yes",
+    "-o", "ConnectTimeout=4",
+    "-o", "ForwardAgent=no",
+]
+
+# --- configuration ------------------------------------------------------------
+
+
+def seed_hosts():
+    """The example's explanation, then this machine, found by its hostname so
+    the file still works when copied to the other machines."""
+    name = socket.gethostname()
+    return ((PLUGIN_DIR / "examples" / "hosts").read_text()
+            + f"\n# This machine. The third column matches it by hostname, so this file\n"
+            f"# also works when copied to your other machines.\n{name.split('.')[0]}  {name}  {name}\n")
+
+
+def ensure_files():
+    """Create the settings folder and whichever of its files is missing, never
+    replacing one that exists, and an empty dismissed-crashes file: the widget
+    can only watch files that exist. Returns the files it created."""
+    created = []
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    for path, text in ((HOSTS_FILE, seed_hosts), (CONFIG_FILE, (PLUGIN_DIR / "examples" / "config").read_text),
+                       (DISMISSED_FILE, lambda: "{}\n")):
+        try:
+            with open(path, "x") as f:
+                f.write(text())
+        except FileExistsError:
+            continue
+        created.append(path)
+    return created
+
+
+def read_hosts():
+    hosts = []
+    for line in HOSTS_FILE.read_text().splitlines():
+        line = line.split("#", 1)[0].split()
+        if line:
+            label, target, hostname = (line + [None, None])[:3]
+            if target is None:
+                raise ValueError(f"{HOSTS_FILE}: '{label}' has no ssh target")
+            hosts.append({"label": label, "target": target, "hostname": hostname})
+    return hosts
+
+
+def read_config():
+    """The settings as a dict; repo lines gather in order into
+    config["repos"]."""
+    config = {}
+    repos = []
+    try:
+        text = CONFIG_FILE.read_text()
+    except FileNotFoundError:
+        return config
+    for n, line in enumerate(text.splitlines(), 1):
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        key, sep, value = (p.strip() for p in line.partition("="))
+        if not sep or key not in CONFIG_KEYS:
+            raise ValueError(f"{CONFIG_FILE}:{n}: expected one of {', '.join(sorted(CONFIG_KEYS))} = value")
+        if key == "repo":
+            if value not in repos:
+                repos.append(value)
+        else:
+            config[key] = value
+    if repos:
+        config["repos"] = repos
+    return config
+
+
+def repo_columns(config):
+    """(header, path) per repo: its folder's name, with the parent folder's
+    when two repos share one or it is already a column's name."""
+    paths = config.get("repos", [])
+
+    def name(path, parts):
+        return "/".join(Path(path.rstrip("/")).parts[-parts:]).upper() or path
+
+    names = [name(p, 1) for p in paths]
+    return [(name(p, 2) if names.count(n) > 1 or n in BASE_HEADERS + ["AGENT"] else n, p)
+            for n, p in zip(names, paths)]
+
+
+def shell_path(path):
+    """A shell word for a path from the config, expanding ~ on the far side."""
+    if path == "~":
+        return '"$HOME"'
+    if path.startswith("~/"):
+        return '"$HOME"/' + shlex.quote(path[2:])
+    return shlex.quote(path)
+
+
+def crash_id(crash):
+    return f"{crash.get('time')}-{crash.get('pid')}"
+
+
+def read_dismissed():
+    try:
+        data = json.loads(DISMISSED_FILE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    return {k: set(v) for k, v in data.items() if isinstance(v, list)} if isinstance(data, dict) else {}
+
+
+def dismiss_crashes(label, ids):
+    """Add ids to label's dismissed crashes, dropping any older than the 7 days
+    the check looks back, so the file stays small."""
+    dismissed = read_dismissed()
+    dismissed.setdefault(label, set()).update(ids)
+    cutoff = (time.time() - 8 * 86400) * 1e6
+    kept = {k: sorted(i for i in v if int(i.split("-")[0]) >= cutoff) for k, v in dismissed.items()}
+    DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DISMISSED_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps({k: v for k, v in kept.items() if v}, indent=2) + "\n")
+    tmp.replace(DISMISSED_FILE)
+
+
+# --- collecting ---------------------------------------------------------------
+
+
+def is_local(host):
+    return host["target"] == "local" or host["hostname"] == socket.gethostname()
+
+
+def collect(host, config):
+    local = is_local(host)
+    sock = config.get("agent_socket" if local else "forwarded_agent_socket")
+    prelude = (f"AGENT_SOCK={shell_path(sock)}\n" if sock else "") + \
+        f"REPOS=({' '.join(shell_path(r) for r in config.get('repos', []))})\n"
+    ssh = ["ssh", *BASE_SSH_OPTS, *shlex.split(config.get("ssh_options", "")), "--", host["target"]]
+    cmd = ["bash", "-s"] if local else [*ssh, "bash", "-s"]
+    try:
+        p = subprocess.run(cmd, input=prelude + COLLECTOR, capture_output=True, text=True, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {**host, "local": local, "error": f"timed out after {TIMEOUT}s"}
+    data = dict(l.split("=", 1) for l in p.stdout.splitlines() if "=" in l)
+    # The far side only reports facts. It must not rename itself, redirect the
+    # widget's ssh click (target "-oProxyCommand=..." would run here) or claim
+    # to be local, so the hosts file's fields and ours win.
+    for key in ("label", "target", "local", "error", "view"):
+        data.pop(key, None)
+    if "hostname" not in data:
+        err = [l for l in p.stderr.splitlines() if "Pseudo-terminal" not in l]
+        return {**host, "local": local, "error": err[-1] if err else f"exit {p.returncode}"}
+    return {**host, "local": local, **data}
+
+
+def collect_all(hosts, config):
+    with ThreadPoolExecutor(len(hosts)) as pool:
+        return list(pool.map(lambda h: collect(h, config), hosts))
+
+
+def repo_vs_upstream(sha, repo_path):
+    """How a machine's HEAD of a repo relates to the upstream branch as this
+    machine last saw it, or None when this machine has no copy that knows the
+    commit (a project that lives only on the other machine)."""
+    repo = ["git", "-C", os.path.expanduser(repo_path)]
+
+    def git(*args):
+        return subprocess.run(repo + list(args), capture_output=True, text=True)
+
+    # The sha comes from the far side; only a plain object id reaches git,
+    # never something it could read as an option.
+    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) or git("cat-file", "-e", sha + "^{commit}").returncode:
+        return None
+    upstream = git("rev-parse", "@{u}").stdout.strip()
+    if not upstream or sha == upstream:
+        return "" if upstream else "no upstream branch"
+    behind = git("rev-list", "--count", f"{sha}..{upstream}").stdout.strip()
+    ahead = git("rev-list", "--count", f"{upstream}..{sha}").stdout.strip()
+    return ", ".join(p for p in [f"{behind} behind" if behind != "0" else "",
+                                 f"{ahead} ahead" if ahead != "0" else ""] if p)
+
+
+# --- assessing ----------------------------------------------------------------
+
+BASE_HEADERS = ["MACHINE", "UP", "LOAD", "MEM", "DISK /", "UPDATES", "FAILED", "CRASHES"]
+# Columns whose problems cells() already spells out in details.
+EXPLAINED = {"UPDATES", "FAILED", "CRASHES"}
+RANK = {"bad": 2, "warn": 1}
+# Listed with the issues, but never a reason for attention: a repo out of sync
+# is often work in progress.
+INFO = "info"
+
+
+def headers(config):
+    has_agent = "agent_socket" in config or "forwarded_agent_socket" in config
+    return BASE_HEADERS + (["AGENT"] if has_agent else []) + [h for h, _ in repo_columns(config)]
+
+
+def duration(seconds):
+    d, rem = divmod(int(seconds), 86400)
+    return f"{d}d {rem // 3600}h" if d else f"{rem // 3600}h {rem % 3600 // 60}m"
+
+
+def cells(m, config, details, dismissed=()):
+    """(text, style) per column for one machine, appending (severity, line) to
+    details, or (severity, line, extra issue fields). dismissed: crash ids to
+    leave out."""
+    if "error" in m:
+        details.append(("bad", m["error"]))
+        return [(m["label"], "bold"), ("unreachable", "bad")] + [("", None)] * (len(headers(config)) - 2)
+
+    out = [(m["label"] + (" *" if m["local"] else ""), "bold"),
+           (duration(int(m["uptime_s"])), None)]
+
+    load, cpus = float(m["load"]), int(m["cpus"])
+    out.append((f"{load:.1f}/{cpus}", "warn" if load >= cpus else None))
+    mem = int(m["mem_pct"])
+    out.append((f"{mem}%", "warn" if mem >= 90 else None))
+    disk = int(m["disk_pct"])
+    out.append((f"{disk}% ({m['disk_free']} free)",
+                "bad" if disk >= 90 else "warn" if disk >= 80 else None))
+
+    upd = m.get("updates", "?")
+    aur = m.get("updates_aur")
+    text = upd + (f" +{aur} aur" if aur not in (None, "0") else "")
+    reboot = m.get("reboot") == "1"
+    if reboot:
+        text += ", reboot"
+        details.append(("warn", "running kernel was upgraded, reboot to load the new one"))
+    out.append((text, "warn" if reboot or (upd.isdigit() and int(upd) >= 50) else
+                "dim" if upd == "0" and aur in (None, "0") else None))
+
+    failed = m.get("failed", "").split() + [f"{u} (user)" for u in m.get("failed_user", "").split()]
+    out.append((str(len(failed)), "bad" if failed else "dim"))
+    if failed:
+        details.append(("bad", f"failed units: {', '.join(failed)}"))
+
+    try:
+        crashes = json.loads(m.get("crashes") or "[]")
+    except json.JSONDecodeError:
+        crashes = []
+    crashes = [c for c in crashes if isinstance(c, dict) and crash_id(c) not in dismissed]
+    out.append((str(len(crashes)), "warn" if crashes else "dim"))
+    if crashes:
+        names = {}
+        for c in crashes:
+            exe = os.path.basename(c.get("exe") or str(c.get("pid")))
+            names[exe] = names.get(exe, 0) + 1
+        listed = ", ".join(f"{n} ×{k}" if k > 1 else n for n, k in names.items())
+        details.append(("warn", f"crashed in the last 7 days: {listed} (coredumpctl list)",
+                        {"crashes": [crash_id(c) for c in crashes]}))
+
+    if "AGENT" in headers(config):
+        out.append(agent_cell(m))
+
+    for i, (_, path) in enumerate(repo_columns(config)):
+        out.append(repo_cell(m, f"repo{i}_", path))
+    return out
+
+
+def agent_cell(m):
+    # This machine: is its agent up and unlocked? Others: is there a live
+    # agent forwarded in by an ssh session right now?
+    state = m.get("agent")
+    if state is None:
+        return ("-", "dim")
+    if state == "none":
+        return ("not running" if m["local"] else "no session", "bad" if m["local"] else "dim")
+    if state == "timeout":
+        return ("not answering", "warn")
+    if state == "0":
+        return ("locked (0 keys)", "warn")
+    return (f"{state} keys" + ("" if m["local"] else " fwd"), "ok")
+
+
+def repo_cell(m, key, repo_path):
+    """One repo on one machine; key is the prefix of its facts (repo0_)."""
+    head = m.get(key + "head")
+    if head is None:
+        return ("-", "dim")
+    issues = []
+    unpushed, dirty = m.get(key + "unpushed", "?"), m.get(key + "dirty", "0")
+    if unpushed not in ("0", "?"):
+        issues.append(f"{unpushed} unpushed")
+    elif (rel := repo_vs_upstream(head, repo_path)) is None:
+        # Not placeable here: fall back on how far behind the machine counts
+        # itself, as of its own last fetch.
+        behind = m.get(key + "behind", "?")
+        if unpushed == "?":
+            issues.append("no upstream branch")
+        elif behind.isdigit() and behind != "0":
+            issues.append(f"{behind} behind")
+    elif rel:
+        issues.append(rel)
+    if dirty != "0":
+        issues.append(f"{dirty} uncommitted")
+    return (" ".join([head[:7], ", ".join(issues)]).strip(), INFO if issues else "ok")
+
+
+def assess(m, config, dismissed=()):
+    """The view of one machine shared by the table and --json (the bar widget):
+    display cells, detail lines, every issue with its severity, the state of
+    each repo it has, and a status. Repos are never issues: being out of sync
+    is often work in progress."""
+    details = []
+    row = cells(m, config, details, dismissed)
+    issues = [{"severity": d[0], "text": d[1], **(d[2] if len(d) > 2 else {})} for d in details]
+    repo_headers = {h for h, _ in repo_columns(config)}
+    if "error" not in m:  # the error already says why every cell is empty
+        issues += [{"severity": style, "text": f"{h.lower()}: {text}"}
+                   for h, (text, style) in zip(headers(config), row)
+                   if style in RANK and h not in EXPLAINED and h not in repo_headers]
+    repos = [{"name": h.lower(), "status": style,
+              "text": text.partition(" ")[2] if style == INFO else "up to date"}
+             for h, (text, style) in zip(headers(config), row)
+             if h in repo_headers and style in ("ok", INFO)]
+    worst = max((RANK.get(i["severity"], 0) for i in issues), default=0)
+    status = "down" if "error" in m else {2: "bad", 1: "warn", 0: "ok"}[worst]
+    return {"cells": row, "details": details, "issues": issues, "repos": repos, "status": status}
+
+
+# --- rendering ----------------------------------------------------------------
+
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+STYLES = {"ok": "32", "info": "36", "warn": "33", "bad": "1;31", "dim": "2", "bold": "1"}
+
+
+def paint(text, style):
+    return f"\033[{STYLES[style]}m{text}\033[0m" if COLOR and style else text
+
+
+def render(machines, config):
+    cols = headers(config)
+    dismissed = read_dismissed()
+    views = [assess(m, config, dismissed.get(m["label"], ())) for m in machines]
+    rows = [v["cells"] for v in views]
+    details = [f"{m['label']}: {d[1]}" for m, v in zip(machines, views) for d in v["details"]]
+    widths = [max(len(h), *(len(r[i][0]) for r in rows)) for i, h in enumerate(cols)]
+    print("  ".join(paint(h.ljust(w), "dim") for h, w in zip(cols, widths)).rstrip())
+    for r in rows:
+        print("  ".join(paint(t.ljust(w), s) for (t, s), w in zip(r, widths)).rstrip())
+    if details:
+        print()
+        for d in details:
+            print(paint("• ", "warn") + d)
+    note = "* this machine."
+    if "AGENT" in cols:
+        note += " AGENT: the agent here, a live forwarded agent elsewhere."
+    print(paint("\n" + note, "dim"))
+
+
+def json_report(machines, config):
+    cols = headers(config)
+    dismissed = read_dismissed()
+    for m in machines:
+        v = assess(m, config, dismissed.get(m["label"], ()))
+        m["view"] = {"status": v["status"], "issues": v["issues"], "repos": v["repos"],
+                     "columns": {h: {"text": t, "style": st} for h, (t, st) in zip(cols, v["cells"])}}
+    return json.dumps(machines, indent=2)
+
+
+def cached_json(hosts, config, max_age, since=None):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = CACHE_DIR / "last.json"
+    # Held across the check and the collection, so a second caller waits for
+    # the first and then reads its fresh result.
+    with open(CACHE_DIR / "lock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            # The cache's mtime is when its collection started.
+            started = cache.stat().st_mtime
+            if ((max_age is not None and time.time() - started < max_age)
+                    or (since is not None and started >= since)):
+                print(cache.read_text())
+                return 0
+        except FileNotFoundError:
+            pass
+        started = time.time()
+        report = json_report(collect_all(hosts, config), config)
+        tmp = cache.with_suffix(".tmp")
+        tmp.write_text(report)
+        os.utime(tmp, (started, started))
+        tmp.replace(cache)
+    print(report)
+    return 0
+
+
+# --- actions -------------------------------------------------------------------
+
+
+def editor_command(path, inline):
+    """Omarchy's default editor, in this terminal when there is one."""
+    if shutil.which("omarchy-launch-editor"):
+        return ["omarchy-launch-editor", *(["--inline"] if inline else []), str(path)]
+    return [*shlex.split(os.environ.get("VISUAL") or os.environ.get("EDITOR") or "nano"), str(path)]
+
+
+def agent_command():
+    """The default coding agent with the setup guide, or Omarchy's agent picker
+    when none is chosen yet."""
+    agent = subprocess.run(["omarchy-default-agent"], capture_output=True, text=True).stdout.strip()
+    if not agent:
+        return ["omarchy-menu", "summon", "setup.default.agent"]
+    return ["omarchy-agent-prompt",
+            f"Help me set up the Fleetwatch bar widget: follow {PLUGIN_DIR / 'docs' / 'AGENT_SETUP.md'}. "
+            f"Its command is {PLUGIN_DIR / 'bin' / 'fleetwatch'}."]
+
+
+# --- uninstall -----------------------------------------------------------------
+
+
+HYPR_FILE = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "hypr" / "hyprland.lua"
+LINK = Path.home() / ".local" / "bin" / "fleetwatch"
+# The setup guide wraps what it adds to hyprland.lua in these.
+BLOCK_START = "-- >>> fleetwatch"
+BLOCK_END = "-- <<< fleetwatch"
+
+
+def without_border_rule(text):
+    """hyprland.lua's text without what Fleetwatch added to it, or None when
+    nothing of ours is there. A start marker without its end is left alone."""
+    lines = text.splitlines()
+    kept, changed, i = [], False, 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if line.startswith(BLOCK_START):
+            end = next((j for j in range(i + 1, len(lines)) if lines[j].strip().startswith(BLOCK_END)), None)
+            if end is not None:
+                i, changed = end + 1, True
+                continue
+        kept.append(lines[i])
+        i += 1
+    if not changed:
+        return None
+    # No run of blank lines where the block was, nor at the end.
+    tidy = []
+    for line in kept:
+        if line.strip() or (tidy and tidy[-1].strip()):
+            tidy.append(line)
+    return "\n".join(tidy).rstrip("\n") + "\n"
+
+
+def our_link(link=None):
+    """Whether `link` (by default LINK) is a symlink to this plugin's command,
+    wherever installed."""
+    link = link or LINK
+    if not link.is_symlink():
+        return False
+    target = os.path.normpath(link.parent / os.readlink(link))
+    return target == str(PLUGIN_DIR / "bin" / "fleetwatch") or target.endswith(f"/plugins/{PLUGIN_ID}/bin/fleetwatch")
+
+
+def tilde(path):
+    home = str(Path.home())
+    return "~" + str(path)[len(home):] if str(path).startswith(home + "/") else str(path)
+
+
+def write_in_place(path, text):
+    """Replace a file's contents; through a symlink, the file it points at."""
+    real = path.resolve()
+    tmp = real.with_name(f".{real.name}.fleetwatch-{os.getpid()}")
+    try:
+        tmp.write_text(text)
+        shutil.copymode(real, tmp)
+        os.replace(tmp, real)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def uninstall_plan():
+    """What the plugin and its setup left outside the plugin folder, as
+    (description, action) pairs."""
+    plan = []
+    for folder in (CONFIG_DIR, CACHE_DIR, DISMISSED_FILE.parent):
+        if folder.is_symlink():
+            # Stowed from dotfiles, say: the link goes, what it points at stays.
+            plan.append((f"{tilde(folder)}, only the link to {tilde(folder.resolve())}", folder.unlink))
+        elif folder.exists():
+            plan.append((f"{tilde(folder)}/", lambda folder=folder: shutil.rmtree(folder)))
+    if our_link():
+        plan.append((f"{tilde(LINK)}, the link to the `fleetwatch` command", LINK.unlink))
+    try:
+        text = without_border_rule(HYPR_FILE.read_text())
+    except OSError:
+        text = None
+    if text is not None:
+        where = tilde(HYPR_FILE) + (f" (-> {tilde(HYPR_FILE.resolve())})" if HYPR_FILE.is_symlink() else "")
+        plan.append((f"the ssh border rule in {where}", lambda: write_in_place(HYPR_FILE, text)))
+    return plan
+
+
+def ask(options):
+    """One of `options`, or None when cancelled."""
+    if shutil.which("gum"):
+        r = subprocess.run(["gum", "choose", *options], stdout=subprocess.PIPE, text=True)
+        return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+    for n, option in enumerate(options, 1):
+        print(f"  {n}) {option}")
+    try:
+        answer = input("> ").strip()
+    except EOFError:
+        return None
+    return options[int(answer) - 1] if answer.isdigit() and 0 < int(answer) <= len(options) else None
+
+
+def uninstall():
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        print("fleetwatch: --uninstall asks before removing anything; run it in a terminal", file=sys.stderr)
+        return 2
+    plan = uninstall_plan()
+    everything, plugin_only = "Remove the plugin and all of this", "Remove only the plugin"
+    print("Uninstall Fleetwatch\n")
+    if plan:
+        print("Besides the plugin, Fleetwatch and its setup added:\n")
+        for description, _ in plan:
+            print(f"  - {description}")
+        print()
+        choice = ask([everything, plugin_only, "Cancel"])
+    else:
+        print("Nothing besides the plugin needs removing.\n")
+        choice = ask([plugin_only, "Cancel"])
+    if choice not in (everything, plugin_only):
+        print("Nothing removed.")
+        return 1
+    # The plugin goes first: a running widget would create its files again.
+    if subprocess.run(["omarchy-plugin-remove", PLUGIN_ID, "--yes"]).returncode != 0:
+        print("fleetwatch: the plugin was not removed, so nothing else was either", file=sys.stderr)
+        return 1
+    if choice == everything:
+        for description, action in plan:
+            try:
+                action()
+                print(f"Removed {description}.")
+            except OSError as e:
+                print(f"fleetwatch: could not remove {description}: {e.strerror or e}", file=sys.stderr)
+    print("\nThe machine's name in your starship prompt, if you added it, is left as it is.")
+    print("To remove it, see Remove in https://github.com/Frestina/omarchy-fleetwatch#remove")
+    return 0
+
+
+def main(argv):
+    if "-h" in argv or "--help" in argv:
+        print(__doc__.strip())
+        return 0
+    # Before ensure_files(), which would create the folders it removes.
+    if "--uninstall" in argv:
+        return uninstall()
+    try:
+        ensure_files()
+    except OSError as e:
+        print(f"fleetwatch: cannot create {CONFIG_DIR}: {e.strerror}", file=sys.stderr)
+        return 2
+    if "--edit" in argv:
+        what = argv[argv.index("--edit") + 1:][:1]
+        if what not in (["hosts"], ["config"]):
+            print("fleetwatch: --edit takes hosts or config", file=sys.stderr)
+            return 2
+        cmd = editor_command(HOSTS_FILE if what == ["hosts"] else CONFIG_FILE, sys.stdin.isatty())
+        os.execvp(cmd[0], cmd)
+    if "--dismiss-crashes" in argv:
+        label, *ids = argv[argv.index("--dismiss-crashes") + 1:] or [""]
+        if not label or not ids or not all(re.fullmatch(r"\d+-\d+", i) for i in ids):
+            print("fleetwatch: --dismiss-crashes takes a machine's label and crash ids (<time>-<pid>)", file=sys.stderr)
+            return 2
+        dismiss_crashes(label, ids)
+        return 0
+    if "--setup-with-agent" in argv:
+        if not shutil.which("omarchy-agent-prompt"):
+            print("fleetwatch: --setup-with-agent needs Omarchy's `omarchy agent`", file=sys.stderr)
+            return 2
+        cmd = agent_command()
+        if cmd[0] == "omarchy-menu" and shutil.which("notify-send"):
+            subprocess.run(["notify-send", "Fleetwatch", "Pick a default coding agent, then choose Set up again."])
+        os.execvp(cmd[0], cmd)
+    as_json = "--json" in argv
+    max_age = since = None
+    try:
+        if "--max-age" in argv:
+            i = argv.index("--max-age")
+            max_age = float(argv[i + 1])
+            del argv[i:i + 2]
+        if "--since" in argv:
+            i = argv.index("--since")
+            since = float(argv[i + 1])
+            del argv[i:i + 2]
+    except (IndexError, ValueError):
+        print("fleetwatch: --max-age and --since take a number of seconds", file=sys.stderr)
+        return 2
+    wanted = [a for a in argv if not a.startswith("-")]
+    try:
+        config = read_config()
+        hosts = read_hosts()
+    except ValueError as e:
+        print(f"fleetwatch: {e}", file=sys.stderr)
+        return 2
+    if as_json and (max_age is not None or since is not None) and not wanted and hosts:
+        return cached_json(hosts, config, max_age, since)
+    hosts = [h for h in hosts if not wanted or h["label"] in wanted]
+    if not hosts:
+        print(f"fleetwatch: {'no machines matched' if wanted else 'no machines listed'}; "
+              f"list them in {HOSTS_FILE}", file=sys.stderr)
+        return 2
+    machines = collect_all(hosts, config)
+    if as_json:
+        print(json_report(machines, config))
+    else:
+        render(machines, config)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

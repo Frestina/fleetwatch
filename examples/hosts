@@ -1,0 +1,13 @@
+# Machines watched by Fleetwatch, one per line:
+#
+#   <label>  <ssh target>  [<hostname>]
+#
+# The target is whatever you would type after `ssh`: a Host from ~/.ssh/config,
+# user@address, or an address. The line whose hostname matches the machine
+# you are on (or whose target is "local") runs locally, so the same file can be
+# copied to every machine in the list.
+#
+# For example:
+#
+#   desktop    desktop.lan      desktop
+#   homeserver me@192.0.2.10    homeserver

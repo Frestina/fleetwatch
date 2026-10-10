@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/tcballard/omarchy-plugin-template",
+  "commit": "f99681e69937d21c2d4414ac9f65a0fd01fea714",
+  "templateVersion": "0.1.0",
+  "integrationVersion": 1,
+  "compatibility": [
+    "posix-relative-paths",
+    "file-url-entrypoints"
+  ]
+}

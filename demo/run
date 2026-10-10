@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Capture preview.png from the installed widget showing fictional machines.
+#
+# The widget reads ~/.cache/fleetwatch/last.json while it is fresh, so this
+# writes a report built from demo/fixtures/machines.json there, dated a few
+# minutes ahead so both --max-age and refresh-now (--since) serve it. It then
+# makes the widget refresh, opens the popup over IPC, captures it, restores
+# the real cache and refreshes again. Nothing else on the desktop changes, and
+# the shell is not restarted. Check the image before committing it: it must
+# show only the fictional machines.
+#
+# Usage: demo/run "<x>,<y> <w>x<h>"   (grim region around the popup)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+region=${1:?usage: demo/run "<x>,<y> <w>x<h>"}
+id=io.github.frestina.fleetwatch
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/fleetwatch/last.json
+for cmd in python3 qs grim pgrep; do command -v "$cmd" >/dev/null || { echo "demo: missing $cmd" >&2; exit 1; }; done
+pid=$(pgrep -f '^quickshell .*omarchy/shell' | head -1 || true)
+[ -n "$pid" ] || { echo "demo: omarchy-shell is not running" >&2; exit 1; }
+qs ipc --pid "$pid" show | grep -q "target $id" || { echo "demo: $id is not loaded in the shell" >&2; exit 1; }
+
+runtime=${XDG_RUNTIME_DIR:?}
+stale=$(compgen -G "$runtime/fleetwatch-demo.*" || true)
+[ -z "$stale" ] || { echo "demo: interrupted run left $stale; restore its backup.json to $cache by hand" >&2; exit 1; }
+state=$(mktemp -d "$runtime/fleetwatch-demo.XXXXXX")
+had_cache=0
+if [ -e "$cache" ]; then cp -p "$cache" "$state/backup.json"; had_cache=1; fi
+
+cleanup() {
+  qs ipc --pid "$pid" call "$id" close >/dev/null 2>&1 || true
+  if [ "$had_cache" = 1 ]; then cp -p "$state/backup.json" "$cache"; else rm -f "$cache"; fi
+  rm -f "$state/backup.json" && rmdir "$state"
+  # Drop the fixture the widget is holding: collect real data again.
+  qs ipc --pid "$pid" call "$id" refresh >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM HUP
+
+mkdir -p "$(dirname "$cache")"
+python3 - "$cache" <<'PY'
+import importlib.machinery, importlib.util, json, sys
+loader = importlib.machinery.SourceFileLoader("fleetwatch", "bin/fleetwatch")
+spec = importlib.util.spec_from_loader("fleetwatch", loader)
+fleetwatch = importlib.util.module_from_spec(spec)
+sys.dont_write_bytecode = True
+loader.exec_module(fleetwatch)
+facts = json.load(open("demo/fixtures/machines.json"))
+open(sys.argv[1], "w").write(fleetwatch.json_report(facts, {}))
+PY
+touch -d "+5 minutes" "$cache"
+
+qs ipc --pid "$pid" call "$id" refresh
+sleep 2
+qs ipc --pid "$pid" call "$id" open
+sleep 1
+grim -g "$region" preview.png
+echo "demo: wrote preview.png"

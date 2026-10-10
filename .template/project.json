@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "templateVersion": "0.1.0",
+  "kind": "plugin",
+  "owner": "Frestina",
+  "repo": "omarchy-fleetwatch",
+  "slug": "fleetwatch",
+  "name": "Fleetwatch",
+  "author": "Frestina",
+  "id": "io.github.frestina.fleetwatch",
+  "description": "Bar widget that shows the health of your machines over ssh, on any Linux: load, memory, disk, updates, failed units and crashes.",
+  "year": "2026",
+  "inspiration": "",
+  "initialized": true
+}

@@ -1,0 +1,14 @@
+[
+  {"label": "laptop", "target": "local", "hostname": "laptop", "local": true,
+   "uptime_s": "273600", "load": "0.8", "cpus": "8", "mem_pct": "48", "disk_pct": "31",
+   "disk_free": "612G", "reboot": "0", "updates": "3", "failed": "", "failed_user": "", "crashes": "[]"},
+  {"label": "desktop", "target": "desktop.lan", "hostname": "desktop", "local": false,
+   "uptime_s": "1105200", "load": "2.1", "cpus": "16", "mem_pct": "63", "disk_pct": "55",
+   "disk_free": "410G", "reboot": "1", "updates": "12", "updates_aur": "2", "failed": "", "failed_user": "",
+   "crashes": "[{\"exe\": \"/usr/bin/blender\"}]"},
+  {"label": "homeserver", "target": "admin@192.0.2.10", "hostname": "homeserver", "local": false,
+   "uptime_s": "3888000", "load": "0.4", "cpus": "4", "mem_pct": "71", "disk_pct": "93",
+   "disk_free": "14G", "reboot": "0", "updates": "27", "failed": "backup.service ", "failed_user": "", "crashes": "[]"},
+  {"label": "media-pc", "target": "media.lan", "hostname": "media-pc", "local": false,
+   "error": "ssh: connect to host media.lan port 22: No route to host"}
+]
