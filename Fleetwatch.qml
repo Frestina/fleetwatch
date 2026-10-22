@@ -52,10 +52,14 @@ Panel {
   readonly property var needAttention: machines.filter(function(m) {
     return m.view && m.view.status !== "ok"
   })
-  // bad and down outrank warn; the bar icon turns urgent only for those.
+  // bad outranks warn; the bar icon turns urgent only for it.
   readonly property bool urgent: error !== "" || machines.some(function(m) {
-    return m.view && (m.view.status === "bad" || m.view.status === "down")
+    return m.view && m.view.status === "bad"
   })
+
+  // Warnings in the theme's orange (or yellow), which the shell's palette
+  // lacks; its accent can be any hue, red included.
+  property color warnColor: Color.accent
 
   readonly property string statusText: {
     if (loading && machines.length === 0) return "Checking…"
@@ -169,9 +173,19 @@ Panel {
   }
 
   function statusColor(status) {
-    if (status === "bad" || status === "down") return Color.urgent
-    if (status === "warn") return Color.accent
+    if (status === "bad") return Color.urgent
+    if (status === "warn") return root.warnColor
     return root.dim(0.35)
+  }
+
+  // The first of orange, yellow and ANSI yellow that colors.toml has.
+  function loadWarnColor(raw) {
+    var found = {}
+    String(raw || "").split("\n").forEach(function(line) {
+      var match = line.match(/^\s*([A-Za-z0-9_-]+)\s*=\s*["']?(#[0-9A-Fa-f]{6})/)
+      if (match) found[match[1]] = match[2]
+    })
+    root.warnColor = found.orange || found.yellow || found.color3 || Color.accent
   }
 
   function column(machine, name) {
@@ -223,6 +237,23 @@ Panel {
   function fileSaved() {
     if (!saveSettle.running) root.savedAt = Date.now() / 1000
     saveSettle.restart()
+  }
+
+  FileView {
+    id: themeColors
+    path: Color.currentThemePath + "/colors.toml"
+    printErrors: false
+    onLoaded: root.loadWarnColor(text())
+    onLoadFailed: root.loadWarnColor("")
+  }
+
+  // A theme switch reaches the shell's palette over IPC, without a file
+  // change to watch; read the new theme when the palette changes.
+  Connections {
+    target: Color
+    function onAccentChanged() { themeColors.reload() }
+    function onUrgentChanged() { themeColors.reload() }
+    function onBackgroundChanged() { themeColors.reload() }
   }
 
   FileView {
@@ -309,7 +340,7 @@ Panel {
 
           Text {
             text: "󰒋"
-            color: root.urgent ? Color.urgent : root.barForeground
+            color: root.urgent ? Color.urgent : root.needAttention.length > 0 ? root.warnColor : root.barForeground
             font.family: root.bar.fontFamily
             font.pixelSize: Style.font.display
           }
@@ -412,7 +443,7 @@ Panel {
                   implicitWidth: Style.space(8)
                   implicitHeight: Style.space(8)
                   radius: width / 2
-                  color: root.statusColor(machineRow.modelData.view ? machineRow.modelData.view.status : "down")
+                  color: root.statusColor(machineRow.modelData.view ? machineRow.modelData.view.status : "bad")
                 }
 
                 Text {
@@ -461,7 +492,8 @@ Panel {
                     textFormat: Text.PlainText
                     text: "• " + issueRow.modelData.text
                     wrapMode: Text.Wrap
-                    color: issueRow.modelData.severity === "bad" ? Color.urgent : root.barForeground
+                    color: issueRow.modelData.severity === "bad" ? Color.urgent
+                      : issueRow.modelData.severity === "warn" ? root.warnColor : root.barForeground
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.bodySmall
                   }

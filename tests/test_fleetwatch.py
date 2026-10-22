@@ -178,11 +178,25 @@ class Assess(unittest.TestCase):
         self.assertEqual(v["status"], "bad")
         self.assertIn({"severity": "bad", "text": "failed units: a.service, b.service (user)"}, v["issues"])
 
-    def test_unreachable_is_down(self):
-        v = fleetwatch.assess({"label": "gone", "target": "gone", "hostname": None, "local": False,
-                             "error": "timed out after 45s"}, {})
-        self.assertEqual(v["status"], "down")
-        self.assertEqual(v["issues"], [{"severity": "bad", "text": "timed out after 45s"}])
+    def unreachable(self, error):
+        return fleetwatch.assess({"label": "gone", "target": "gone", "hostname": None, "local": False,
+                                  "error": error}, {})
+
+    def test_machine_that_is_off_warns(self):
+        for error in ("ssh: connect to host gone port 22: Connection timed out",
+                      "ssh: connect to host gone port 22: No route to host",
+                      "ssh: Could not resolve hostname gone: Name or service not known"):
+            v = self.unreachable(error)
+            self.assertEqual(v["status"], "warn", error)
+            self.assertEqual(v["issues"], [{"severity": "warn", "text": error}])
+            self.assertEqual(v["cells"][1], ("unreachable", "warn"))
+
+    def test_machine_that_refuses_us_is_bad(self):
+        for error in ("user@gone: Permission denied (publickey).", "Host key verification failed.",
+                      "ssh: connect to host gone port 22: Connection refused", "timed out after 45s"):
+            v = self.unreachable(error)
+            self.assertEqual(v["status"], "bad", error)
+            self.assertEqual(v["issues"], [{"severity": "bad", "text": error}])
 
     def test_optional_columns_follow_config(self):
         self.assertEqual(fleetwatch.headers({}), fleetwatch.BASE_HEADERS)

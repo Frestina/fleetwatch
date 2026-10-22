@@ -7,7 +7,7 @@
 <p align="center"><img alt="The Fleetwatch popup listing four machines: one fine, one needing a reboot, one with a full disk and a failed unit, one unreachable" src="preview.png" width="400"></p>
 
 A bar icon that shows a count when a machine needs attention and turns urgent
-when one is in trouble or unreachable. It stays dim until you add machines
+when one is in trouble. It stays dim until you add machines
 besides the one you are on. It comes with a `fleetwatch` command that prints
 the same check as a table in the terminal.
 
@@ -16,7 +16,8 @@ laptop with another desktop all work, as long as they run Linux and you can
 reach them with ssh. Only the machine with the bar needs Omarchy.
 
 - **Left-click:** a popup with one row per machine and the issues behind its
-  status. Click a machine to open an ssh session to it.
+  status: problems in red, warnings in your theme's orange (or yellow, in a
+  theme without one). Click a machine to open an ssh session to it.
 - **Middle-click** (or <kbd>r</kbd> in the popup): check now.
 - **Right-click:** the full table in a floating terminal.
 
@@ -34,8 +35,12 @@ editor, can hand the setup to your coding agent, and uninstalls the plugin.
 | Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the ✓ on their line in the popup; only crashes after that show. |
 | Agent, git repositories | optional, see [settings](#optional-settings) |
 
-A machine that cannot be reached within a few seconds shows as down with the
-ssh error.
+A machine that cannot be reached within a few seconds shows as unreachable,
+with the ssh error. When it looks off or out of reach (the connection times
+out, there is no route to it or its name doesn't resolve), that is a warning:
+a desktop you have turned off doesn't turn the bar urgent. When it answers but
+won't let Fleetwatch in (a refused connection, a key it doesn't accept, a host
+key that doesn't verify), that is a problem.
 
 ## Requirements
 

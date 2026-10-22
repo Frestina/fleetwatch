@@ -23,9 +23,11 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   (`label`, `target`, `local`) and the computed `error` and `view` always come
   from this side, so a machine cannot redirect the widget's ssh click.
 - `assess()` turns facts into display cells, issues with a severity, and a
-  status (`ok`, `warn`, `bad`, `down`). Repository issues have the severity
-  `info`: listed, but never raising the status. The terminal table and `--json` share
-  it.
+  status (`ok`, `warn`, `bad`). An unreachable machine's ssh error is a `warn`
+  when it matches `OFFLINE` (timeout, no route, name not resolving: off or out
+  of reach, often on purpose) and `bad` otherwise. Repository issues have the
+  severity `info`: listed, but never raising the status. The terminal table and
+  `--json` share it.
 - `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleetwatch/last.json`
   under an exclusive `flock`, so the widget's copies on several monitors share
   one collection. The cache's mtime is when its collection started.
@@ -80,6 +82,10 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   (`<time>-<pid>`); its ✓ runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleetwatch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.
+- Warnings use the theme's `orange`, else `yellow`, else `color3`, else
+  the accent, read from `colors.toml`: the shell's palette has no warning
+  colour. A theme switch updates the shell over IPC without a file change, so
+  the file is read again when `Color`'s accent, urgent or background changes.
 - All external text is rendered with `Text.PlainText`. The ssh click and the
   table action go through the bar's `run()` with `Util.shellQuote`.
 - IPC target `io.github.frestina.fleetwatch`: `open`, `close`, `toggle`,

@@ -23,7 +23,10 @@ Optional settings go in ~/.config/fleetwatch/config as `key = value` lines:
     repo = ~/Projects/app                  one line per repo, a column each
 
 Polling never forwards your agent and never prompts (BatchMode), so a machine
-that needs a password or key approval shows as unreachable.
+that needs a password or key approval shows as unreachable. A machine that is
+off or out of reach (the connection times out, there is no route to it or its
+name doesn't resolve) is a warning; one that answers but won't let us in is a
+problem.
 
 Both files are created on the first run if they are missing: the hosts file
 with this machine in it, the config with every setting commented out. Existing
@@ -35,7 +38,7 @@ Usage: fleetwatch [--json [--max-age SECONDS | --since EPOCH]] [LABEL...]
        fleetwatch --dismiss-crashes LABEL ID...
        fleetwatch --uninstall
 
---json adds a "view" to each machine: its status (ok, warn, bad, down), the
+--json adds a "view" to each machine: its status (ok, warn, bad), the
 issues behind it and the table's display text. The bar widget shows that, so
 the rules for what counts as a problem live only here.
 
@@ -83,6 +86,11 @@ DISMISSED_FILE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local"
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 PLUGIN_ID = "io.github.frestina.fleetwatch"
 TIMEOUT = 45  # checkupdates and the AUR query hit the network
+# ssh errors that mean the machine is off, asleep or on another network, rather
+# than up and refusing us. Often on purpose, so a warning, not a problem.
+OFFLINE = re.compile(r"Connection timed out|Operation timed out|No route to host|Network is unreachable|"
+                     r"Host is down|Could not resolve hostname|Name or service not known|"
+                     r"Temporary failure in name resolution")
 CONFIG_KEYS = {"ssh_options", "agent_socket", "forwarded_agent_socket", "repo"}
 
 COLLECTOR = r"""
@@ -348,8 +356,9 @@ def cells(m, config, details, dismissed=()):
     details, or (severity, line, extra issue fields). dismissed: crash ids to
     leave out."""
     if "error" in m:
-        details.append(("bad", m["error"]))
-        return [(m["label"], "bold"), ("unreachable", "bad")] + [("", None)] * (len(headers(config)) - 2)
+        severity = "warn" if OFFLINE.search(m["error"]) else "bad"
+        details.append((severity, m["error"]))
+        return [(m["label"], "bold"), ("unreachable", severity)] + [("", None)] * (len(headers(config)) - 2)
 
     out = [(m["label"] + (" *" if m["local"] else ""), "bold"),
            (duration(int(m["uptime_s"])), None)]
@@ -460,7 +469,7 @@ def assess(m, config, dismissed=()):
              for h, (text, style) in zip(headers(config), row)
              if h in repo_headers and style in ("ok", INFO)]
     worst = max((RANK.get(i["severity"], 0) for i in issues), default=0)
-    status = "down" if "error" in m else {2: "bad", 1: "warn", 0: "ok"}[worst]
+    status = {2: "bad", 1: "warn", 0: "ok"}[worst]
     return {"cells": row, "details": details, "issues": issues, "repos": repos, "status": status}
 
 
