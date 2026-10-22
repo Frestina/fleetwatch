@@ -48,7 +48,7 @@ like to change, instead of going through the setup again.
 | Disk `/` | 80% full (90% is shown as a problem) |
 | Updates | 50 or more pending, or the running kernel was upgraded and needs a reboot (pacman with `checkupdates`, `yay` for AUR, or apt) |
 | Failed units | any failed systemd unit, system or user |
-| Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the ✓ on their line in the popup; only crashes after that show. |
+| Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the broom on their line in the popup; only crashes after that show. |
 | Agent, git repositories | optional, see [settings](#optional-settings) |
 
 A machine that cannot be reached within a few seconds shows as unreachable,
@@ -58,7 +58,7 @@ a desktop you have turned off doesn't turn the bar urgent. When it answers but
 won't let Fleetwatch in (a refused connection, a key it doesn't accept, a host
 key that doesn't verify), that is a problem.
 
-Every warning has a ✓ in the popup that dismisses it until it clears: the
+Every warning has a broom in the popup that dismisses it until it clears: the
 updates until you have updated, a reboot note until the next reboot, a machine
 that is off until it is reachable again, high load, memory or disk until they
 are back to normal. The next time it comes back, it shows again. Problems in

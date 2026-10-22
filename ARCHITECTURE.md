@@ -86,11 +86,11 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   the script has created all four.
 - Repos are listed per machine from the view's `repos` (`ok` muted, `info` in
   full), never as issues. A crash issue carries its crash ids
-  (`<time>-<pid>`); its ✓ runs `--dismiss-crashes <label> <ids…>`, which adds
+  (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleetwatch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.
 - A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `load`,
-  `mem`, `disk`, `agent`) and an `until` for its ✓'s tooltip. The ✓ runs
+  `mem`, `disk`, `agent`) and an `until` for its dismiss button's tooltip. The button runs
   `--dismiss-warning <label> <key>`, which adds the key to
   `dismissed-warnings.json`; `assess()` then leaves that warning out while it
   is a warning, never once it is `bad`. After every collection,

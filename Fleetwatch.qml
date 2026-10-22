@@ -526,7 +526,7 @@ Panel {
                   // warnings hide until they clear.
                   PanelActionButton {
                     visible: !!issueRow.modelData.crashes || !!issueRow.modelData.until
-                    iconText: "󰄬"
+                    iconText: "󰃢"
                     tooltipText: issueRow.modelData.crashes ? "Dismiss these crashes" : "Dismiss " + issueRow.modelData.until
                     foreground: root.barForeground
                     fontFamily: root.bar.fontFamily

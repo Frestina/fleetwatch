@@ -68,10 +68,10 @@ user's, that ended in the failed state.
   one, with a backtrace when debug symbols are available.
 - Say whether it looks like a one-off or keeps happening, and whether a known
   bug or an update could be the cause.
-- To quiet it: the ✓ on the crash line in the popup dismisses these crashes;
+- To quiet it: the broom on the crash line in the popup dismisses these crashes;
   later ones still show.
 
-**Any warning** (orange in the popup) has a ✓ that dismisses it until it
+**Any warning** (orange in the popup) has a broom that dismisses it until it
 clears, and it shows again the next time it comes back. Mention it when the
 user would rather live with a warning; it's their call, not yours to make.
 
