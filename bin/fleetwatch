@@ -369,7 +369,10 @@ def cells(m, config, details, dismissed=()):
     if reboot:
         text += ", reboot"
         details.append(("warn", "running kernel was upgraded, reboot to load the new one"))
-    out.append((text, "warn" if reboot or (upd.isdigit() and int(upd) >= 50) else
+    many = upd.isdigit() and int(upd) >= 50
+    if many:
+        details.append(("warn", f"updates: {upd} pending" + (f", +{aur} aur" if aur not in (None, "0") else "")))
+    out.append((text, "warn" if reboot or many else
                 "dim" if upd == "0" and aur in (None, "0") else None))
 
     failed = m.get("failed", "").split() + [f"{u} (user)" for u in m.get("failed_user", "").split()]

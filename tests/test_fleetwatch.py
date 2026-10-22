@@ -167,6 +167,12 @@ class Assess(unittest.TestCase):
         self.assertIn("running kernel was upgraded, reboot to load the new one", texts)
         self.assertIn("crashed in the last 7 days: ghostty ×2 (coredumpctl list)", texts)
 
+    def test_many_updates_warn(self):
+        self.assertEqual(self.status(updates="49")["status"], "ok")
+        v = self.status(updates="414", updates_aur="2")
+        self.assertEqual(v["status"], "warn")
+        self.assertEqual(v["issues"], [{"severity": "warn", "text": "updates: 414 pending, +2 aur"}])
+
     def test_failed_units_are_bad(self):
         v = self.status(failed="a.service ", failed_user="b.service ")
         self.assertEqual(v["status"], "bad")
