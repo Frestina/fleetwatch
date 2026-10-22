@@ -37,16 +37,18 @@ Panel {
   readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/fleetwatch"
   // Matches DISMISSED_FILE in bin/fleetwatch.
   readonly property string dismissedFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/fleetwatch/dismissed-crashes.json"
+  // Matches QUIETED_FILE in bin/fleetwatch.
+  readonly property string quietedFile: dismissedFile.replace(/dismissed-crashes\.json$/, "dismissed-warnings.json")
   readonly property int refreshSec: Math.max(60, Number(setting("refreshIntervalSec", 600)) || 600)
 
   // At least one machine is checked over ssh.
   readonly property bool hasRemote: machines.some(function(m) { return !m.local })
   // Nothing listed yet but the machine this runs on.
   readonly property bool onlyThisMachine: error === "" && machines.length > 0 && machines.every(function(m) { return m.local })
-  // When the hosts file, settings or dismissed crashes were saved (Unix
+  // When the hosts file, settings or dismissals were saved (Unix
   // seconds); see fileSaved().
   property real savedAt: 0
-  // A watch only takes on a file that exists, and the script creates all three
+  // A watch only takes on a file that exists, and the script creates all four
   // on its first run, so the watchers start once a check has succeeded.
   property bool filesReady: false
 
@@ -161,6 +163,12 @@ Panel {
     root.bar.run([root.command, "--dismiss-crashes", machine.label].concat(ids).map(Util.shellQuote).join(" "))
   }
 
+  // A warning with a key hides until a check finds it gone.
+  function dismissWarning(machine, key) {
+    if (!root.bar || !key) return
+    root.bar.run([root.command, "--dismiss-warning", machine.label, key].map(Util.shellQuote).join(" "))
+  }
+
   function ssh(machine) {
     if (!root.bar || machine.local) return
     root.close()
@@ -273,6 +281,13 @@ Panel {
 
   FileView {
     path: root.filesReady ? root.dismissedFile : ""
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.fileSaved()
+  }
+
+  FileView {
+    path: root.filesReady ? root.quietedFile : ""
     watchChanges: true
     printErrors: false
     onFileChanged: root.fileSaved()
@@ -507,14 +522,17 @@ Panel {
                     onClicked: root.runCommand(["--ask-agent", machineRow.modelData.label, issueRow.modelData.text])
                   }
 
-                  // Crash lines only: hides exactly these crashes; later ones show.
+                  // Crash lines hide exactly these crashes, so later ones show;
+                  // warnings hide until they clear.
                   PanelActionButton {
-                    visible: !!issueRow.modelData.crashes
+                    visible: !!issueRow.modelData.crashes || !!issueRow.modelData.until
                     iconText: "󰄬"
-                    tooltipText: "Dismiss these crashes"
+                    tooltipText: issueRow.modelData.crashes ? "Dismiss these crashes" : "Dismiss " + issueRow.modelData.until
                     foreground: root.barForeground
                     fontFamily: root.bar.fontFamily
-                    onClicked: root.dismissCrashes(machineRow.modelData, issueRow.modelData.crashes)
+                    onClicked: issueRow.modelData.crashes
+                      ? root.dismissCrashes(machineRow.modelData, issueRow.modelData.crashes)
+                      : root.dismissWarning(machineRow.modelData, issueRow.modelData.key)
                   }
                 }
               }

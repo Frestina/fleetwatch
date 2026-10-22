@@ -36,6 +36,7 @@ Usage: fleetwatch [--json [--max-age SECONDS | --since EPOCH]] [LABEL...]
        fleetwatch --edit hosts|config
        fleetwatch --ask-agent [LABEL ISSUE]
        fleetwatch --dismiss-crashes LABEL ID...
+       fleetwatch --dismiss-warning LABEL KEY
        fleetwatch --uninstall
 
 --json adds a "view" to each machine: its status (ok, warn, bad), the
@@ -52,6 +53,10 @@ seconds), so a refresh-now sent to every monitor's widget collects once.
 --dismiss-crashes hides those crashes (ids are "<time>-<pid>" from
 coredumpctl, as listed in --json) of the machine LABEL from now on; later
 crashes still show. Dismissals are kept on this machine only.
+
+--dismiss-warning hides one warning of the machine LABEL (KEY is the "key" of
+the issue in --json) until a check finds it gone; the next time it comes back,
+it shows again. A dismissed warning that becomes a problem shows anyway.
 
 --ask-agent starts your default coding agent (`omarchy agent`) with the guide
 in docs/AGENT_SETUP.md, to fill in or change the hosts file and settings with
@@ -84,6 +89,8 @@ CONFIG_FILE = CONFIG_DIR / "config"
 CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "fleetwatch"
 # Crashes dismissed from this machine's widget: {label: ["<time>-<pid>", ...]}.
 DISMISSED_FILE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "fleetwatch" / "dismissed-crashes.json"
+# Warnings dismissed until they clear: {label: ["updates", ...]}.
+QUIETED_FILE = DISMISSED_FILE.with_name("dismissed-warnings.json")
 # The plugin folder; resolve() follows a ~/.local/bin/fleetwatch link back here.
 PLUGIN_DIR = Path(__file__).resolve().parent.parent
 PLUGIN_ID = "io.github.frestina.fleetwatch"
@@ -174,13 +181,14 @@ def seed_hosts():
 
 def ensure_files():
     """Create the settings folder and whichever of its files is missing, never
-    replacing one that exists, and an empty dismissed-crashes file: the widget
-    can only watch files that exist. Returns the files it created."""
+    replacing one that exists, and empty files of dismissed crashes and
+    warnings: the widget can only watch files that exist. Returns the files it
+    created."""
     created = []
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
     for path, text in ((HOSTS_FILE, seed_hosts), (CONFIG_FILE, (PLUGIN_DIR / "examples" / "config").read_text),
-                       (DISMISSED_FILE, lambda: "{}\n")):
+                       (DISMISSED_FILE, lambda: "{}\n"), (QUIETED_FILE, lambda: "{}\n")):
         try:
             with open(path, "x") as f:
                 f.write(text())
@@ -254,25 +262,79 @@ def crash_id(crash):
     return f"{crash.get('time')}-{crash.get('pid')}"
 
 
-def read_dismissed():
+def read_state(path):
+    """{label: set} from one of the dismissed files."""
     try:
-        data = json.loads(DISMISSED_FILE.read_text())
+        data = json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError):
         return {}
     return {k: set(v) for k, v in data.items() if isinstance(v, list)} if isinstance(data, dict) else {}
 
 
+def write_state(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({k: sorted(v) for k, v in data.items() if v}, indent=2) + "\n")
+    tmp.replace(path)
+
+
+def read_dismissed():
+    return read_state(DISMISSED_FILE)
+
+
+def read_quieted():
+    return read_state(QUIETED_FILE)
+
+
+class state_lock:
+    """Held while a dismissed file is read and written again: the widget's
+    dismiss and a check that clears a warning may both write at once."""
+
+    def __enter__(self):
+        DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
+        self.lock = open(DISMISSED_FILE.parent / "lock", "w")
+        fcntl.flock(self.lock, fcntl.LOCK_EX)
+
+    def __exit__(self, *exc):
+        self.lock.close()
+
+
 def dismiss_crashes(label, ids):
     """Add ids to label's dismissed crashes, dropping any older than the 7 days
     the check looks back, so the file stays small."""
-    dismissed = read_dismissed()
-    dismissed.setdefault(label, set()).update(ids)
-    cutoff = (time.time() - 8 * 86400) * 1e6
-    kept = {k: sorted(i for i in v if int(i.split("-")[0]) >= cutoff) for k, v in dismissed.items()}
-    DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp = DISMISSED_FILE.with_suffix(".tmp")
-    tmp.write_text(json.dumps({k: v for k, v in kept.items() if v}, indent=2) + "\n")
-    tmp.replace(DISMISSED_FILE)
+    with state_lock():
+        dismissed = read_dismissed()
+        dismissed.setdefault(label, set()).update(ids)
+        cutoff = (time.time() - 8 * 86400) * 1e6
+        write_state(DISMISSED_FILE, {k: {i for i in v if int(i.split("-")[0]) >= cutoff}
+                                     for k, v in dismissed.items()})
+
+
+def dismiss_warning(label, key):
+    with state_lock():
+        quieted = read_quieted()
+        quieted.setdefault(label, set()).add(key)
+        write_state(QUIETED_FILE, quieted)
+
+
+def forget_cleared(machines, views):
+    """Forget a dismissed warning once a check finds it gone, so it shows the
+    next time it comes back. An unreachable machine says nothing about its
+    other warnings, and an update count that couldn't be read is not an
+    update."""
+    with state_lock():
+        quieted = read_quieted()
+        changed = False
+        for m, v in zip(machines, views):
+            keys = quieted.get(m["label"])
+            if not keys or "error" in m:
+                continue
+            kept = {k for k in keys if k in v["warnings"]
+                    or (k == "updates" and not m.get("updates", "?").isdigit())}
+            if kept != keys:
+                quieted[m["label"]], changed = kept, True
+        if changed:
+            write_state(QUIETED_FILE, quieted)
 
 
 # --- collecting ---------------------------------------------------------------
@@ -338,6 +400,10 @@ BASE_HEADERS = ["MACHINE", "UP", "LOAD", "MEM", "DISK /", "UPDATES", "FAILED", "
 # Columns whose problems cells() already spells out in details.
 EXPLAINED = {"UPDATES", "FAILED", "CRASHES"}
 RANK = {"bad": 2, "warn": 1}
+# Warnings that can be dismissed until they clear, and what clearing means.
+UNTIL = {"unreachable": "until it is reachable again", "reboot": "until the next reboot",
+         "updates": "until you update", "load": "until it clears", "mem": "until it clears",
+         "disk": "until it clears", "agent": "until it clears"}
 # Listed with the issues, but never a reason for attention: a repo out of sync
 # is often work in progress.
 INFO = "info"
@@ -359,7 +425,7 @@ def cells(m, config, details, dismissed=()):
     leave out."""
     if "error" in m:
         severity = "warn" if OFFLINE.search(m["error"]) else "bad"
-        details.append((severity, m["error"]))
+        details.append((severity, m["error"], {"key": "unreachable"} if severity == "warn" else {}))
         return [(m["label"], "bold"), ("unreachable", severity)] + [("", None)] * (len(headers(config)) - 2)
 
     out = [(m["label"] + (" *" if m["local"] else ""), "bold"),
@@ -379,10 +445,11 @@ def cells(m, config, details, dismissed=()):
     reboot = m.get("reboot") == "1"
     if reboot:
         text += ", reboot"
-        details.append(("warn", "running kernel was upgraded, reboot to load the new one"))
+        details.append(("warn", "running kernel was upgraded, reboot to load the new one", {"key": "reboot"}))
     many = upd.isdigit() and int(upd) >= 50
     if many:
-        details.append(("warn", f"updates: {upd} pending" + (f", +{aur} aur" if aur not in (None, "0") else "")))
+        details.append(("warn", f"updates: {upd} pending" + (f", +{aur} aur" if aur not in (None, "0") else ""),
+                        {"key": "updates"}))
     out.append((text, "warn" if reboot or many else
                 "dim" if upd == "0" and aur in (None, "0") else None))
 
@@ -453,26 +520,37 @@ def repo_cell(m, key, repo_path):
     return (" ".join([head[:7], ", ".join(issues)]).strip(), INFO if issues else "ok")
 
 
-def assess(m, config, dismissed=()):
+def assess(m, config, dismissed=(), quieted=()):
     """The view of one machine shared by the table and --json (the bar widget):
     display cells, detail lines, every issue with its severity, the state of
     each repo it has, and a status. Repos are never issues: being out of sync
-    is often work in progress."""
+    is often work in progress. dismissed: crash ids to leave out; quieted:
+    keys of warnings to leave out, as long as they are only warnings.
+    "warnings" lists the key of every warning, quieted or not."""
     details = []
     row = cells(m, config, details, dismissed)
     issues = [{"severity": d[0], "text": d[1], **(d[2] if len(d) > 2 else {})} for d in details]
     repo_headers = {h for h, _ in repo_columns(config)}
     if "error" not in m:  # the error already says why every cell is empty
-        issues += [{"severity": style, "text": f"{h.lower()}: {text}"}
+        issues += [{"severity": style, "text": f"{h.lower()}: {text}",
+                    **({"key": h.lower().split()[0]} if style == "warn" else {})}
                    for h, (text, style) in zip(headers(config), row)
                    if style in RANK and h not in EXPLAINED and h not in repo_headers]
+    warnings = {i["key"] for i in issues if i["severity"] == "warn" and "key" in i}
+    for i in issues:
+        if i["severity"] == "warn" and "key" in i:
+            i["until"] = UNTIL[i["key"]]
+    issues = [i for i in issues if not (i["severity"] == "warn" and i.get("key") in quieted)]
+    details = [d for d in details
+               if not (d[0] == "warn" and len(d) > 2 and d[2].get("key") in quieted)]
     repos = [{"name": h.lower(), "status": style,
               "text": text.partition(" ")[2] if style == INFO else "up to date"}
              for h, (text, style) in zip(headers(config), row)
              if h in repo_headers and style in ("ok", INFO)]
     worst = max((RANK.get(i["severity"], 0) for i in issues), default=0)
     status = {2: "bad", 1: "warn", 0: "ok"}[worst]
-    return {"cells": row, "details": details, "issues": issues, "repos": repos, "status": status}
+    return {"cells": row, "details": details, "issues": issues, "repos": repos, "status": status,
+            "warnings": warnings}
 
 
 # --- rendering ----------------------------------------------------------------
@@ -485,10 +563,18 @@ def paint(text, style):
     return f"\033[{STYLES[style]}m{text}\033[0m" if COLOR and style else text
 
 
+def assess_all(machines, config):
+    """assess() each machine with what was dismissed from here, then forget
+    the dismissed warnings that have cleared."""
+    dismissed, quieted = read_dismissed(), read_quieted()
+    views = [assess(m, config, dismissed.get(m["label"], ()), quieted.get(m["label"], ())) for m in machines]
+    forget_cleared(machines, views)
+    return views
+
+
 def render(machines, config):
     cols = headers(config)
-    dismissed = read_dismissed()
-    views = [assess(m, config, dismissed.get(m["label"], ())) for m in machines]
+    views = assess_all(machines, config)
     rows = [v["cells"] for v in views]
     details = [f"{m['label']}: {d[1]}" for m, v in zip(machines, views) for d in v["details"]]
     widths = [max(len(h), *(len(r[i][0]) for r in rows)) for i, h in enumerate(cols)]
@@ -507,9 +593,7 @@ def render(machines, config):
 
 def json_report(machines, config):
     cols = headers(config)
-    dismissed = read_dismissed()
-    for m in machines:
-        v = assess(m, config, dismissed.get(m["label"], ()))
+    for m, v in zip(machines, assess_all(machines, config)):
         m["view"] = {"status": v["status"], "issues": v["issues"], "repos": v["repos"],
                      "columns": {h: {"text": t, "style": st} for h, (t, st) in zip(cols, v["cells"])}}
     return json.dumps(machines, indent=2)
@@ -765,6 +849,14 @@ def main(argv):
             print("fleetwatch: --dismiss-crashes takes a machine's label and crash ids (<time>-<pid>)", file=sys.stderr)
             return 2
         dismiss_crashes(label, ids)
+        return 0
+    if "--dismiss-warning" in argv:
+        args = argv[argv.index("--dismiss-warning") + 1:]
+        if len(args) != 2 or not args[0] or args[1] not in UNTIL:
+            print(f"fleetwatch: --dismiss-warning takes a machine's label and one of {', '.join(UNTIL)}",
+                  file=sys.stderr)
+            return 2
+        dismiss_warning(*args)
         return 0
     as_json = "--json" in argv
     max_age = since = None

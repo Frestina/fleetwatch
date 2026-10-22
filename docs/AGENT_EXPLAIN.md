@@ -71,6 +71,10 @@ user's, that ended in the failed state.
 - To quiet it: the ✓ on the crash line in the popup dismisses these crashes;
   later ones still show.
 
+**Any warning** (orange in the popup) has a ✓ that dismisses it until it
+clears, and it shows again the next time it comes back. Mention it when the
+user would rather live with a warning; it's their call, not yours to make.
+
 **`disk /: …`** The root filesystem is filling up (80% warns, 90% is a
 problem).
 
@@ -82,11 +86,12 @@ problem).
 
 **`running kernel was upgraded, …`** The kernel was updated, and the old one
 is still running. Nothing is broken; new kernel modules won't load until a
-reboot. Reboot when it suits.
+reboot. Reboot when it suits, or dismiss it until then.
 
 **`updates: …`** 50 or more pending updates. Say what kind of machine it is
 (Omarchy: `omarchy update`; other Arch: `sudo pacman -Syu`; Debian or Ubuntu:
-`sudo apt upgrade`). Don't update it yourself.
+`sudo apt upgrade`). Don't update it yourself. Dismissing it hides it until
+the machine has been updated.
 
 **`load: …` or `mem: …`** The load average is at or above the CPU count, or
 memory is 90% used. `top -bn1 | head -20` and `ps aux --sort=-%mem | head`

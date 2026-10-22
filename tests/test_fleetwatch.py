@@ -46,6 +46,7 @@ class ConfigDir(unittest.TestCase):
             "CONFIG_FILE": base / "config",
             "CACHE_DIR": base / "cache",
             "DISMISSED_FILE": base / "state" / "dismissed-crashes.json",
+            "QUIETED_FILE": base / "state" / "dismissed-warnings.json",
         }
         for name, value in patches.items():
             p = mock.patch.object(fleetwatch, name, value)
@@ -171,7 +172,8 @@ class Assess(unittest.TestCase):
         self.assertEqual(self.status(updates="49")["status"], "ok")
         v = self.status(updates="414", updates_aur="2")
         self.assertEqual(v["status"], "warn")
-        self.assertEqual(v["issues"], [{"severity": "warn", "text": "updates: 414 pending, +2 aur"}])
+        self.assertEqual(v["issues"], [{"severity": "warn", "text": "updates: 414 pending, +2 aur",
+                                        "key": "updates", "until": "until you update"}])
 
     def test_failed_units_are_bad(self):
         v = self.status(failed="a.service ", failed_user="b.service ")
@@ -188,7 +190,8 @@ class Assess(unittest.TestCase):
                       "ssh: Could not resolve hostname gone: Name or service not known"):
             v = self.unreachable(error)
             self.assertEqual(v["status"], "warn", error)
-            self.assertEqual(v["issues"], [{"severity": "warn", "text": error}])
+            self.assertEqual(v["issues"], [{"severity": "warn", "text": error, "key": "unreachable",
+                                            "until": "until it is reachable again"}])
             self.assertEqual(v["cells"][1], ("unreachable", "warn"))
 
     def test_machine_that_refuses_us_is_bad(self):
@@ -206,18 +209,70 @@ class Assess(unittest.TestCase):
         self.assertEqual(v["status"], "warn")
 
 
+class QuietedWarnings(ConfigDir):
+    def view(self, quieted=(), **changes):
+        return fleetwatch.assess({**HEALTHY, **changes}, {}, quieted=quieted)
+
+    def test_only_warnings_have_a_key(self):
+        v = self.view(mem_pct="95", disk_pct="93", reboot="1")
+        keys = {i["text"].split(":")[0].split(",")[0]: i.get("key") for i in v["issues"]}
+        self.assertEqual(keys, {"running kernel was upgraded": "reboot", "mem": "mem", "disk /": None})
+        self.assertEqual(v["warnings"], {"reboot", "mem"})
+
+    def test_quieted_warning_is_gone_until_it_is_a_problem(self):
+        v = self.view(quieted={"updates", "disk"}, updates="414", disk_pct="85")
+        self.assertEqual((v["status"], v["issues"], v["details"]), ("ok", [], []))
+        self.assertEqual(v["warnings"], {"updates", "disk"})
+        self.assertEqual(self.view(quieted={"disk"}, disk_pct="93")["status"], "bad")
+
+    def quiet(self, label, *keys):
+        for key in keys:
+            fleetwatch.dismiss_warning(label, key)
+
+    def test_cleared_warning_is_forgotten(self):
+        self.quiet("desktop", "updates", "reboot")
+        m = {**HEALTHY, "updates": "3", "reboot": "1"}
+        fleetwatch.forget_cleared([m], [self.view(**m)])
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"reboot"}})
+
+    def test_nothing_is_forgotten_while_unknown(self):
+        self.quiet("desktop", "updates", "mem")
+        gone = {"label": "desktop", "target": "desktop.lan", "hostname": None, "local": False,
+                "error": "ssh: connect to host desktop.lan port 22: Connection timed out"}
+        fleetwatch.forget_cleared([gone], [fleetwatch.assess(gone, {})])
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates", "mem"}})
+        m = {**HEALTHY, "updates": "?", "mem_pct": "95"}
+        fleetwatch.forget_cleared([m], [self.view(**m)])
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates", "mem"}})
+
+    def test_back_online_forgets_unreachable(self):
+        self.quiet("desktop", "unreachable")
+        fleetwatch.forget_cleared([HEALTHY], [self.view()])
+        self.assertEqual(fleetwatch.read_quieted(), {})
+
+    def test_cli_takes_known_keys_only(self):
+        for args in (["desktop", "crashes"], ["desktop"], ["", "updates"], ["desktop", "updates", "x"]):
+            with mock.patch("sys.stderr"):
+                self.assertEqual(fleetwatch.main(["--dismiss-warning", *args]), 2)
+        self.assertEqual(fleetwatch.read_quieted(), {})
+        self.assertEqual(fleetwatch.main(["--dismiss-warning", "desktop", "updates"]), 0)
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates"}})
+
+
 class FirstRun(ConfigDir):
     def test_creates_both_files_with_this_machine(self):
         with mock.patch("socket.gethostname", return_value="box.example"):
             self.assertEqual(fleetwatch.ensure_files(), [self.base / "hosts", self.base / "config",
-                                                       self.base / "state" / "dismissed-crashes.json"])
+                                                       self.base / "state" / "dismissed-crashes.json",
+                                                       self.base / "state" / "dismissed-warnings.json"])
             self.assertEqual(fleetwatch.read_hosts(), [{"label": "box", "target": "box.example", "hostname": "box.example"}])
             self.assertTrue(fleetwatch.is_local(fleetwatch.read_hosts()[0]))
         self.assertEqual(fleetwatch.read_config(), {})
 
     def test_never_replaces_existing_files(self):
         (self.base / "hosts").write_text("mine local\n")
-        self.assertEqual(fleetwatch.ensure_files(), [self.base / "config", self.base / "state" / "dismissed-crashes.json"])
+        self.assertEqual(fleetwatch.ensure_files(), [self.base / "config", self.base / "state" / "dismissed-crashes.json",
+                                                   self.base / "state" / "dismissed-warnings.json"])
         self.assertEqual((self.base / "hosts").read_text(), "mine local\n")
         self.assertEqual(fleetwatch.ensure_files(), [])
 

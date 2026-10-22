@@ -58,6 +58,12 @@ a desktop you have turned off doesn't turn the bar urgent. When it answers but
 won't let Fleetwatch in (a refused connection, a key it doesn't accept, a host
 key that doesn't verify), that is a problem.
 
+Every warning has a ✓ in the popup that dismisses it until it clears: the
+updates until you have updated, a reboot note until the next reboot, a machine
+that is off until it is reachable again, high load, memory or disk until they
+are back to normal. The next time it comes back, it shows again. Problems in
+red can't be dismissed, and a dismissed warning that becomes one shows anyway.
+
 ## Requirements
 
 On the machine with the bar:
@@ -177,9 +183,9 @@ themes where the border takes another colour, the two differ.
 - It creates `~/.config/fleetwatch/hosts` and `config` if they are
   missing, and edits nothing after that.
 - The last result is cached in `~/.cache/fleetwatch/`.
-- Crashes you dismiss are remembered in
-  `~/.local/state/fleetwatch/dismissed-crashes.json`, on the machine you
-  dismissed them from.
+- Crashes and warnings you dismiss are remembered in
+  `~/.local/state/fleetwatch/dismissed-crashes.json` and
+  `dismissed-warnings.json`, on the machine you dismissed them from.
 - **Uninstall** removes only what is listed under [Remove](#remove), after
   asking.
 - Your machine list and settings stay in `~/.config/fleetwatch/` on your

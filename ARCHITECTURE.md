@@ -79,16 +79,26 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   read as an option; the label must be in the hosts file, which supplies the
   target, and the issue goes into the prompt as one JSON-quoted line without
   control characters, marked as data. A
-  `FileView` watches both files and the dismissed crashes; a save waits 500 ms
+  `FileView` watches both files and both dismissed files; a save waits 500 ms
   for the editor to finish, then refreshes with `--since` the save, so every
   monitor shares one check. A watch only takes on an existing file, so the
   watchers get their paths after the first successful check, by which time
-  the script has created all three.
+  the script has created all four.
 - Repos are listed per machine from the view's `repos` (`ok` muted, `info` in
   full), never as issues. A crash issue carries its crash ids
   (`<time>-<pid>`); its ✓ runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleetwatch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.
+- A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `load`,
+  `mem`, `disk`, `agent`) and an `until` for its ✓'s tooltip. The ✓ runs
+  `--dismiss-warning <label> <key>`, which adds the key to
+  `dismissed-warnings.json`; `assess()` then leaves that warning out while it
+  is a warning, never once it is `bad`. After every collection,
+  `forget_cleared()` drops the keys a reachable machine no longer warns
+  about, so the warning shows again when it comes back. It leaves an
+  unreachable machine's keys alone, and `updates` while the count is `?`.
+  Both dismissed files are written under a lock in the state folder: a
+  dismiss and a check can write at once.
 - Warnings use the theme's `orange`, else `yellow`, else `color3`, else
   the accent, read from `colors.toml`: the shell's palette has no warning
   colour. A theme switch updates the shell over IPC without a file change, so
