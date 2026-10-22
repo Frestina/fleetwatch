@@ -4,7 +4,7 @@
 
 <p align="center"><a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a></p>
 
-<p align="center"><img alt="The Fleetwatch popup listing four machines: one fine, one needing a reboot, one with a full disk and a failed unit, one unreachable" src="preview.png" width="400"></p>
+<p align="center"><img alt="The Fleetwatch popup listing four machines: one fine, one with a reboot note and a crash in orange, one with a full disk and a failed unit in red, and one switched off, in orange. Each issue has an agent button, and each orange one a broom to dismiss it" src="preview.png" width="400"></p>
 
 A bar icon that shows a count when a machine needs attention and turns urgent
 when one is in trouble. It stays dim until you add machines
