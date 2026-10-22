@@ -17,12 +17,28 @@ reach them with ssh. Only the machine with the bar needs Omarchy.
 
 - **Left-click:** a popup with one row per machine and the issues behind its
   status: problems in red, warnings in your theme's orange (or yellow, in a
-  theme without one). Click a machine to open an ssh session to it.
+  theme without one). Click a machine to open an ssh session to it, or the
+  agent button next to an issue to have your coding agent
+  [explain it](#ask-your-agent).
 - **Middle-click** (or <kbd>r</kbd> in the popup): check now.
 - **Right-click:** the full table in a floating terminal.
 
 The bottom of the popup opens your list of machines and the settings in your
 editor, can hand the setup to your coding agent, and uninstalls the plugin.
+
+## Ask your agent
+
+Every issue in the popup has an agent button. It starts your default coding
+agent (`omarchy agent`) with the machine, the issue and
+[a guide](docs/AGENT_EXPLAIN.md), so you can ask what a failed unit is or
+whether a crash matters, without a screenshot. The agent looks and explains;
+it asks before it connects to another machine with ssh, and before it changes
+anything. The issue's text came from the machine, so the agent is told to treat
+it as data, not as instructions.
+
+Once you have listed other machines, **Set up with agent** at the bottom of the
+popup becomes **Ask agent**: the agent sums up your setup and asks what you'd
+like to change, instead of going through the setup again.
 
 ## What it checks
 
@@ -168,8 +184,9 @@ themes where the border takes another colour, the two differ.
   asking.
 - Your machine list and settings stay in `~/.config/fleetwatch/` on your
   machine; nothing is sent anywhere else.
-- **Set up with agent** runs `omarchy agent` with your default coding agent,
-  which sends what it reads to that agent's provider like any other session.
+- **Set up with agent**, **Ask agent** and the agent button on an issue run
+  `omarchy agent` with your default coding agent, which sends what it reads to
+  that agent's provider like any other session.
 
 ## Update
 

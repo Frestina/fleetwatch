@@ -10,9 +10,10 @@ import qs.Ui
 // and display text in --json; this widget only shows it.
 //
 // left = popup · middle = refresh now · right = full table in a terminal.
-// Clicking a machine in the popup opens an ssh session to it. The popup's
-// footer edits the hosts file and settings, hands the setup to an agent, or
-// uninstalls; saving either file checks again.
+// Clicking a machine in the popup opens an ssh session to it, and each issue
+// can be handed to the agent to explain. The popup's footer edits the hosts
+// file and settings, hands the setup to an agent, or uninstalls; saving either
+// file checks again.
 Panel {
   id: root
   moduleName: "io.github.frestina.fleetwatch"
@@ -140,7 +141,7 @@ Panel {
     if (root.bar) root.bar.run("omarchy-launch-floating-terminal-with-presentation " + Util.shellQuote(root.command))
   }
 
-  // --edit hosts|config, --setup-with-agent: the script opens the editor or agent.
+  // --edit hosts|config, --ask-agent [label issue]: the script opens the editor or agent.
   function runCommand(args) {
     if (!root.bar) return
     root.close()
@@ -498,6 +499,14 @@ Panel {
                     font.pixelSize: Style.font.bodySmall
                   }
 
+                  PanelActionButton {
+                    iconText: "󰚩"
+                    tooltipText: "Ask your agent about this"
+                    foreground: root.barForeground
+                    fontFamily: root.bar.fontFamily
+                    onClicked: root.runCommand(["--ask-agent", machineRow.modelData.label, issueRow.modelData.text])
+                  }
+
                   // Crash lines only: hides exactly these crashes; later ones show.
                   PanelActionButton {
                     visible: !!issueRow.modelData.crashes
@@ -600,15 +609,18 @@ Panel {
 
           Item { Layout.fillWidth: true }
 
+          // The guide tells a first setup from a later visit by the files.
           Button {
             iconText: "󰚩"
-            text: "Set up with agent"
-            tooltipText: "Your default coding agent finds your machines and fills in the list with you"
+            text: root.onlyThisMachine ? "Set up with agent" : "Ask agent"
+            tooltipText: root.onlyThisMachine
+              ? "Your default coding agent finds your machines and fills in the list with you"
+              : "Your default coding agent goes through your setup with you, or explains what it shows"
             foreground: root.barForeground
             fontFamily: root.bar.fontFamily
             fontSize: Style.font.bodySmall
             bordered: root.onlyThisMachine
-            onClicked: root.runCommand(["--setup-with-agent"])
+            onClicked: root.runCommand(["--ask-agent"])
           }
         }
       }

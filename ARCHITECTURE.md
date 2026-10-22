@@ -70,8 +70,15 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   and the last stderr line becomes the visible error.
 - The footer runs the script with `--edit hosts|config` (Omarchy's default
   editor), `--uninstall` (in a floating terminal, since it asks) or
-  `--setup-with-agent` (`omarchy agent prompt` pointing at
-  `docs/AGENT_SETUP.md`, or Omarchy's agent picker when none is chosen). A
+  `--ask-agent` (`omarchy agent prompt` pointing at `docs/AGENT_SETUP.md`,
+  or Omarchy's agent picker when none is chosen). The guide tells a first setup
+  from a later visit by the two files; the button's label follows
+  `onlyThisMachine`. Each issue's agent button runs `--ask-agent <label>
+  <issue text>`, pointing at `docs/AGENT_EXPLAIN.md`. `--ask-agent` is only
+  recognised as the first argument, so issue text from a machine can never
+  read as an option; the label must be in the hosts file, which supplies the
+  target, and the issue goes into the prompt as one JSON-quoted line without
+  control characters, marked as data. A
   `FileView` watches both files and the dismissed crashes; a save waits 500 ms
   for the editor to finish, then refreshes with `--since` the save, so every
   monitor shares one check. A watch only takes on an existing file, so the

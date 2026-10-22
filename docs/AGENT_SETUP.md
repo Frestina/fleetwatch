@@ -1,8 +1,9 @@
 # Setting up Fleetwatch: a guide for coding agents
 
-The user clicked "Set up with your agent" in the Fleetwatch bar widget. Help them
-list their machines and choose the optional settings. Work with them step by
-step: they decide what goes in, you do the looking up and the typing.
+The user clicked "Set up with agent" or "Ask agent" in the Fleetwatch bar
+widget. Help them list their machines and choose the optional settings, or
+change what they set up before. Work with them step by step: they decide what
+goes in, you do the looking up and the typing.
 
 ## Limits
 
@@ -44,6 +45,29 @@ Comments in the file explain each one.
 | `agent_socket` | They use an ssh agent socket that is not the default (look at `SSH_AUTH_SOCK` and `IdentityAgent` in `~/.ssh/config`) and want to see whether it is running and unlocked. |
 | `forwarded_agent_socket` | They forward their agent to the other machines through a fixed socket path (an `~/.ssh/rc` that links `SSH_AUTH_SOCK` somewhere). Only when such a setup already exists. |
 | `repo` (one line per repository) | They want to follow git repositories: dotfiles (often `~/dotfiles` or `~/.dotfiles`) kept on several machines, or a project that lives on one machine they ssh into. The path is checked on every machine, so a repository on several machines needs the same path on each. Ask which; don't scan their disks. Each needs an upstream branch. |
+
+## Set up already?
+
+Read both files first. If `hosts` lists only this machine and every setting
+in `config` is still commented out, this is a first setup: follow
+[Steps](#steps) from the start.
+
+Otherwise the user has set it up before, and is back to change something or
+ask about it. Don't go through every step again:
+
+1. Run the plugin's `bin/fleetwatch` (the user's prompt gives its full path)
+   to see the current state.
+2. Summarize the setup in a few lines: the machines and how each is doing,
+   the settings that are on, and whether [the terminal
+   command](#the-terminal-command) and the additions in [Know where you
+   are](#know-where-you-are) are in place.
+3. Ask what they would like: add or remove a machine, change a setting, one
+   of the optional additions they haven't made, or an explanation of
+   something the widget shows. For an explanation, follow `AGENT_EXPLAIN.md`
+   next to this file.
+4. Do what they choose with the matching steps below, within the same
+   limits. If you changed anything, finish with the summary from step 8,
+   listing only this session's changes.
 
 ## Steps
 
