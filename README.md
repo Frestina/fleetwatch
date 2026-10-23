@@ -129,7 +129,7 @@ front of a setting to turn it on. They are kept in
 | `ssh_options` | Extra options for the polling ssh connections, for example `-o IdentityAgent=none` to keep a password manager's agent from asking for approval on every check. |
 | `agent_socket` | Adds an AGENT column: whether this agent is running and unlocked on this machine. |
 | `forwarded_agent_socket` | On the other machines: whether an ssh session has forwarded your agent there right now. |
-| `repo` | Adds a column, named after the folder, comparing a git repository across machines: uncommitted and unpushed changes, and commits behind or ahead of its upstream. One line per repository. Every machine with a repository at that path reports it, and the others show `-`, so a project that lives only on a machine you ssh into works too. The popup lists each repository under every machine that has it: muted when up to date, in full when it is out of sync. It never counts as needing attention. |
+| `repo` | Adds a column, named after the folder, comparing a git repository across machines: uncommitted and unpushed changes, and commits behind or ahead of its upstream. One line per repository. Every machine with a repository at that path reports it, and the others show `-`, so a project that lives only on a machine you ssh into works too. The popup folds them under each machine that has them, into one line that counts them and how many are out of sync; click it to list each repository, muted when up to date and in full when out of sync. It never counts as needing attention. |
 
 The refresh interval (10 minutes by default) is a widget setting in the bar
 settings.

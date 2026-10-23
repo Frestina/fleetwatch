@@ -60,6 +60,9 @@ Panel {
     return m.view && m.view.status === "bad"
   })
 
+  // Machines whose repo lines are unfolded, by label; kept across checks.
+  property var openRepos: ({})
+
   // Warnings in the theme's orange (or yellow), which the shell's palette
   // lacks; its accent can be any hue, red included.
   property color warnColor: Color.accent
@@ -167,6 +170,12 @@ Panel {
   function dismissWarning(machine, key) {
     if (!root.bar || !key) return
     root.bar.run([root.command, "--dismiss-warning", machine.label, key].map(Util.shellQuote).join(" "))
+  }
+
+  function toggleRepos(machine) {
+    var open = Object.assign({}, root.openRepos)
+    open[machine.label] = !open[machine.label]
+    root.openRepos = open
   }
 
   function ssh(machine) {
@@ -426,6 +435,9 @@ Panel {
             id: machineRow
             required property var modelData
             readonly property var issues: modelData.view ? modelData.view.issues : []
+            readonly property var repos: modelData.view && modelData.view.repos ? modelData.view.repos : []
+            readonly property int reposOutOfSync: repos.filter(function(r) { return r.status !== "ok" }).length
+            readonly property bool reposOpen: !!root.openRepos[modelData.label]
 
             width: content.width
             implicitHeight: rowColumn.implicitHeight + Style.space(12)
@@ -537,16 +549,39 @@ Panel {
                 }
               }
 
-              // Every configured repo this machine has: muted when up to date.
+              // Every configured repo this machine has, folded under one line
+              // that counts them: muted when all are up to date.
+              Text {
+                visible: machineRow.repos.length > 0
+                width: rowColumn.width
+                leftPadding: Style.space(16)
+                textFormat: Text.PlainText
+                text: "󰊢 " + machineRow.repos.length + (machineRow.repos.length === 1 ? " repo" : " repos")
+                  + (machineRow.reposOutOfSync > 0 ? " · " + machineRow.reposOutOfSync + " out of sync" : "")
+                  + "  " + (machineRow.reposOpen ? "󰅀" : "󰅂")
+                elide: Text.ElideRight
+                color: machineRow.reposOutOfSync > 0 || reposMouse.containsMouse ? root.barForeground : root.dim(0.45)
+                font.family: root.bar.fontFamily
+                font.pixelSize: Style.font.bodySmall
+
+                MouseArea {
+                  id: reposMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.toggleRepos(machineRow.modelData)
+                }
+              }
+
               Repeater {
-                model: machineRow.modelData.view && machineRow.modelData.view.repos ? machineRow.modelData.view.repos : []
+                model: machineRow.reposOpen ? machineRow.repos : []
 
                 delegate: Text {
                   required property var modelData
                   width: rowColumn.width
-                  leftPadding: Style.space(16)
+                  leftPadding: Style.space(32)
                   textFormat: Text.PlainText
-                  text: "󰊢 " + modelData.name + ": " + modelData.text
+                  text: modelData.name + ": " + modelData.text
                   elide: Text.ElideRight
                   color: modelData.status === "ok" ? root.dim(0.45) : root.barForeground
                   font.family: root.bar.fontFamily
