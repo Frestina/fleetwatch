@@ -1,14 +1,18 @@
 [
   {"label": "laptop", "target": "local", "hostname": "laptop", "local": true,
    "uptime_s": "273600", "load": "0.8", "cpus": "8", "mem_pct": "48", "disk_pct": "31",
-   "disk_free": "612G", "reboot": "0", "updates": "3", "failed": "", "failed_user": "", "crashes": "[]"},
+   "disk_free": "612G", "reboot": "0", "updates": "3", "failed": "", "failed_user": "", "crashes": "[]",
+   "repo0_head": "3f9c2e7a1b8d4c6e0f5a9b2d7c1e8f4a6b3d0c9e", "repo0_dirty": "0", "repo0_unpushed": "0", "repo0_behind": "0",
+   "repo1_head": "8e1d4b7f2a9c6e3d0b5f8a1c4e7d2b9f6a3c0e5d", "repo1_dirty": "2", "repo1_unpushed": "0", "repo1_behind": "0"},
   {"label": "desktop", "target": "desktop.lan", "hostname": "desktop", "local": false,
    "uptime_s": "1105200", "load": "2.1", "cpus": "16", "mem_pct": "63", "disk_pct": "55",
    "disk_free": "410G", "reboot": "1", "updates": "12", "updates_aur": "2", "failed": "", "failed_user": "",
-   "crashes": "[{\"exe\": \"/usr/bin/blender\"}]"},
+   "crashes": "[{\"exe\": \"/usr/bin/blender\"}]",
+   "repo0_head": "c4a7e0d3b6f9c2e5a8d1b4f7e0c3a6d9b2e5f8a1", "repo0_dirty": "0", "repo0_unpushed": "0", "repo0_behind": "3"},
   {"label": "homeserver", "target": "admin@192.0.2.10", "hostname": "homeserver", "local": false,
    "uptime_s": "3888000", "load": "0.4", "cpus": "4", "mem_pct": "71", "disk_pct": "93",
-   "disk_free": "14G", "reboot": "0", "updates": "27", "failed": "backup.service ", "failed_user": "", "crashes": "[]"},
+   "disk_free": "14G", "reboot": "0", "updates": "27", "failed": "backup.service ", "failed_user": "", "crashes": "[]",
+   "repo0_head": "3f9c2e7a1b8d4c6e0f5a9b2d7c1e8f4a6b3d0c9e", "repo0_dirty": "0", "repo0_unpushed": "0", "repo0_behind": "0"},
   {"label": "media-pc", "target": "media.lan", "hostname": "media-pc", "local": false,
    "error": "ssh: connect to host media.lan port 22: No route to host"}
 ]

@@ -45,7 +45,9 @@ fleetwatch = importlib.util.module_from_spec(spec)
 sys.dont_write_bytecode = True
 loader.exec_module(fleetwatch)
 facts = json.load(open("demo/fixtures/machines.json"))
-open(sys.argv[1], "w").write(fleetwatch.json_report(facts, {}))
+# The fixture's repo facts are numbered like these paths.
+config = {"repos": ["~/dotfiles", "~/Projects/app"]}
+open(sys.argv[1], "w").write(fleetwatch.json_report(facts, config))
 PY
 touch -d "+5 minutes" "$cache"
 
