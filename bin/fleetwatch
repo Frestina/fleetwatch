@@ -6,19 +6,21 @@ for the rest) and prints a table: uptime, load, memory, disk, pending updates,
 reboot needed, failed systemd units and crashes in the last 7 days. An
 optional check of an SSH agent is switched on in the config file.
 
-Your machines are listed in ~/.config/fleetwatch/hosts, one per line:
+Your machines are listed in ~/.config/fleet/hosts, the list every Fleet tool
+shares (https://github.com/Frestina/fleet/blob/main/HOSTS.md), one per line:
 
     <label>  <ssh target>  [<hostname>]
 
-The line whose hostname matches this machine, or whose target is "local", runs
+The line whose hostname is this machine's (in full, or up to the first dot),
+or whose target is "local", runs
 locally, so the same file works from any of them. Everything else is reached
 with `ssh <target>`, so your ~/.ssh/config decides users, keys and ports.
 
-Optional settings go in ~/.config/fleetwatch/config as `key = value` lines:
+Optional settings go in ~/.config/fleet/watch/config.toml, as TOML strings:
 
-    ssh_options = -o IdentityAgent=none    extra options for polling ssh
-    agent_socket = ~/.ssh/agent.sock       SSH agent to check on this machine
-    forwarded_agent_socket = ~/.ssh/fwd.sock   agent to check on the others
+    ssh_options = "-o IdentityAgent=none"    extra options for polling ssh
+    agent_socket = "~/.ssh/agent.sock"       SSH agent to check on this machine
+    forwarded_agent_socket = "~/.ssh/fwd.sock"   agent to check on the others
 
 Polling never forwards your agent and never prompts (BatchMode), so a machine
 that needs a password or key approval shows as unreachable. A machine that is
@@ -63,9 +65,10 @@ it with docs/AGENT_EXPLAIN.md instead, to explain that issue.
 
 --uninstall lists what the plugin and its setup added, asks whether to remove
 all of it or only the plugin, and then runs `omarchy plugin remove`. It removes
-the three fleetwatch folders, the ~/.local/bin/fleetwatch link when it
-points at this plugin, and the border rule in ~/.config/hypr/hyprland.lua. The
-starship prompt is never edited; remove the hostname there yourself.
+the three fleet/watch folders, the shared hosts file when no other Fleet tool's
+folder is left beside it, the ~/.local/bin/fleetwatch link when it points at
+this plugin, and the border rule in ~/.config/hypr/hyprland.lua. The starship
+prompt is never edited; remove the hostname there yourself.
 """
 
 import fcntl
@@ -78,15 +81,18 @@ import socket
 import subprocess
 import sys
 import time
+import tomllib
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "fleetwatch"
-HOSTS_FILE = CONFIG_DIR / "hosts"
-CONFIG_FILE = CONFIG_DIR / "config"
-CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "fleetwatch"
+# The Fleet tools share the hosts file; each keeps its own files in fleet/<word>.
+FLEET_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "fleet"
+HOSTS_FILE = FLEET_DIR / "hosts"
+CONFIG_DIR = FLEET_DIR / "watch"
+CONFIG_FILE = CONFIG_DIR / "config.toml"
+CACHE_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "fleet" / "watch"
 # Crashes dismissed from this machine's widget: {label: ["<time>-<pid>", ...]}.
-DISMISSED_FILE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "fleetwatch" / "dismissed-crashes.json"
+DISMISSED_FILE = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state") / "fleet" / "watch" / "dismissed-crashes.json"
 # Warnings dismissed until they clear: {label: ["updates", ...]}.
 QUIETED_FILE = DISMISSED_FILE.with_name("dismissed-warnings.json")
 # The plugin folder; resolve() follows a ~/.local/bin/fleetwatch link back here.
@@ -157,12 +163,11 @@ BASE_SSH_OPTS = [
 
 
 def seed_hosts():
-    """The example's explanation, then this machine, found by its hostname so
-    the file still works when copied to the other machines."""
+    """The shared header, then this machine, found by its hostname so the file
+    still works when copied to the other machines."""
     name = socket.gethostname()
-    return ((PLUGIN_DIR / "examples" / "hosts").read_text()
-            + f"\n# This machine. The third column matches it by hostname, so this file\n"
-            f"# also works when copied to your other machines.\n{name.split('.')[0]}  {name}  {name}\n")
+    short = name.split(".")[0]
+    return (PLUGIN_DIR / "examples" / "hosts").read_text() + f"\n{short}  {short}  {name}\n"
 
 
 def ensure_files():
@@ -173,7 +178,7 @@ def ensure_files():
     created = []
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     DISMISSED_FILE.parent.mkdir(parents=True, exist_ok=True)
-    for path, text in ((HOSTS_FILE, seed_hosts), (CONFIG_FILE, (PLUGIN_DIR / "examples" / "config").read_text),
+    for path, text in ((HOSTS_FILE, seed_hosts), (CONFIG_FILE, (PLUGIN_DIR / "examples" / "config.toml").read_text),
                        (DISMISSED_FILE, lambda: "{}\n"), (QUIETED_FILE, lambda: "{}\n")):
         try:
             with open(path, "x") as f:
@@ -197,20 +202,18 @@ def read_hosts():
 
 
 def read_config():
-    """The settings as a dict."""
-    config = {}
+    """The settings as a dict of strings."""
     try:
-        text = CONFIG_FILE.read_text()
+        with open(CONFIG_FILE, "rb") as f:
+            config = tomllib.load(f)
     except FileNotFoundError:
-        return config
-    for n, line in enumerate(text.splitlines(), 1):
-        line = line.split("#", 1)[0].strip()
-        if not line:
-            continue
-        key, sep, value = (p.strip() for p in line.partition("="))
-        if not sep or key not in CONFIG_KEYS:
-            raise ValueError(f"{CONFIG_FILE}:{n}: expected one of {', '.join(sorted(CONFIG_KEYS))} = value")
-        config[key] = value
+        return {}
+    except tomllib.TOMLDecodeError as e:
+        raise ValueError(f"{CONFIG_FILE}: {e}") from None
+    for key, value in config.items():
+        if key not in CONFIG_KEYS or not isinstance(value, str):
+            raise ValueError(f'{CONFIG_FILE}: {key} is not a setting; expected one of '
+                             f'{", ".join(sorted(CONFIG_KEYS))} = "value"')
     return config
 
 
@@ -306,7 +309,8 @@ def forget_cleared(machines, views):
 
 
 def is_local(host):
-    return host["target"] == "local" or host["hostname"] == socket.gethostname()
+    name = socket.gethostname()
+    return host["target"] == "local" or host["hostname"] in (name, name.split(".")[0])
 
 
 def collect(host, config):
@@ -630,6 +634,14 @@ def write_in_place(path, text):
         tmp.unlink(missing_ok=True)
 
 
+def remove_hosts():
+    HOSTS_FILE.unlink()
+    try:
+        FLEET_DIR.rmdir()
+    except OSError:
+        pass
+
+
 def uninstall_plan():
     """What the plugin and its setup left outside the plugin folder, as
     (description, action) pairs."""
@@ -640,6 +652,11 @@ def uninstall_plan():
             plan.append((f"{tilde(folder)}, only the link to {tilde(folder.resolve())}", folder.unlink))
         elif folder.exists():
             plan.append((f"{tilde(folder)}/", lambda folder=folder: shutil.rmtree(folder)))
+    # The hosts file is shared: only when no other Fleet tool's folder is left.
+    others = [p for p in FLEET_DIR.iterdir() if p.is_dir() and p != CONFIG_DIR] if FLEET_DIR.is_dir() else []
+    if (HOSTS_FILE.exists() or HOSTS_FILE.is_symlink()) and not others:
+        what = f"only the link to {tilde(HOSTS_FILE.resolve())}" if HOSTS_FILE.is_symlink() else "your list of machines"
+        plan.append((f"{tilde(HOSTS_FILE)}, {what} (no other Fleet tool uses it)", remove_hosts))
     if our_link():
         plan.append((f"{tilde(LINK)}, the link to the `fleetwatch` command", LINK.unlink))
     try:

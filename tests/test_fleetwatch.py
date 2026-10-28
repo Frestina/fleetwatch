@@ -41,9 +41,10 @@ class ConfigDir(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         patches = {
-            "CONFIG_DIR": base,
+            "FLEET_DIR": base,
             "HOSTS_FILE": base / "hosts",
-            "CONFIG_FILE": base / "config",
+            "CONFIG_DIR": base / "watch",
+            "CONFIG_FILE": base / "watch" / "config.toml",
             "CACHE_DIR": base / "cache",
             "DISMISSED_FILE": base / "state" / "dismissed-crashes.json",
             "QUIETED_FILE": base / "state" / "dismissed-warnings.json",
@@ -53,6 +54,8 @@ class ConfigDir(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.base = base
+        self.config = base / "watch" / "config.toml"
+        self.config.parent.mkdir()
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -75,13 +78,29 @@ class HostsAndConfig(ConfigDir):
         self.assertEqual(fleetwatch.read_config(), {})
 
     def test_config_keys(self):
-        (self.base / "config").write_text("# optional\nssh_options = -o IdentityAgent=none\n")
+        self.config.write_text('# optional\nssh_options = "-o IdentityAgent=none"  # on-disk key\n')
         self.assertEqual(fleetwatch.read_config(), {"ssh_options": "-o IdentityAgent=none"})
 
     def test_unknown_config_key_is_an_error(self):
-        (self.base / "config").write_text("colour = red\n")
+        self.config.write_text('colour = "red"\n')
         with self.assertRaises(ValueError):
             fleetwatch.read_config()
+
+    def test_config_values_are_toml_strings(self):
+        for text in ("ssh_options = -o IdentityAgent=none\n", "agent_socket = 3\n"):
+            self.config.write_text(text)
+            with self.assertRaises(ValueError, msg=text):
+                fleetwatch.read_config()
+
+    def test_short_hostname_is_this_machine(self):
+        with mock.patch("socket.gethostname", return_value="box.example"):
+            self.assertTrue(fleetwatch.is_local({"target": "box.lan", "hostname": "box"}))
+            self.assertTrue(fleetwatch.is_local({"target": "box.lan", "hostname": "box.example"}))
+            self.assertFalse(fleetwatch.is_local({"target": "boxer", "hostname": "boxer"}))
+
+    def test_columns_after_the_hostname_are_ignored(self):
+        (self.base / "hosts").write_text("desktop desktop.lan desktop later fields  # note\n")
+        self.assertEqual(fleetwatch.read_hosts(), [{"label": "desktop", "target": "desktop.lan", "hostname": "desktop"}])
 
 
 class ShellPath(unittest.TestCase):
@@ -257,16 +276,16 @@ class QuietedWarnings(ConfigDir):
 class FirstRun(ConfigDir):
     def test_creates_both_files_with_this_machine(self):
         with mock.patch("socket.gethostname", return_value="box.example"):
-            self.assertEqual(fleetwatch.ensure_files(), [self.base / "hosts", self.base / "config",
+            self.assertEqual(fleetwatch.ensure_files(), [self.base / "hosts", self.config,
                                                        self.base / "state" / "dismissed-crashes.json",
                                                        self.base / "state" / "dismissed-warnings.json"])
-            self.assertEqual(fleetwatch.read_hosts(), [{"label": "box", "target": "box.example", "hostname": "box.example"}])
+            self.assertEqual(fleetwatch.read_hosts(), [{"label": "box", "target": "box", "hostname": "box.example"}])
             self.assertTrue(fleetwatch.is_local(fleetwatch.read_hosts()[0]))
         self.assertEqual(fleetwatch.read_config(), {})
 
     def test_never_replaces_existing_files(self):
         (self.base / "hosts").write_text("mine local\n")
-        self.assertEqual(fleetwatch.ensure_files(), [self.base / "config", self.base / "state" / "dismissed-crashes.json",
+        self.assertEqual(fleetwatch.ensure_files(), [self.config, self.base / "state" / "dismissed-crashes.json",
                                                    self.base / "state" / "dismissed-warnings.json"])
         self.assertEqual((self.base / "hosts").read_text(), "mine local\n")
         self.assertEqual(fleetwatch.ensure_files(), [])
@@ -370,13 +389,14 @@ class EndToEnd(unittest.TestCase):
     def run_cli(self, *args, hosts=None, files=None):
         with tempfile.TemporaryDirectory() as tmp:
             if hosts is not None:
-                os.makedirs(f"{tmp}/fleetwatch")
-                Path(f"{tmp}/fleetwatch/hosts").write_text(hosts)
+                os.makedirs(f"{tmp}/fleet")
+                Path(f"{tmp}/fleet/hosts").write_text(hosts)
             env = {**os.environ, "XDG_CONFIG_HOME": tmp, "XDG_CACHE_HOME": f"{tmp}/cache", "XDG_STATE_HOME": f"{tmp}/state"}
             p = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
                                text=True, env=env, timeout=120)
             if files is not None:
-                files.update({f.name: f.read_text() for f in Path(f"{tmp}/fleetwatch").iterdir()})
+                files.update({str(f.relative_to(f"{tmp}/fleet")): f.read_text()
+                              for f in Path(f"{tmp}/fleet").rglob("*") if f.is_file()})
             return p
 
     def test_first_run_checks_this_machine(self):
@@ -385,7 +405,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         [m] = json.loads(p.stdout)
         self.assertTrue(m["local"])
-        self.assertEqual(sorted(files), ["config", "hosts"])
+        self.assertEqual(sorted(files), ["hosts", "watch/config.toml"])
 
     def test_empty_hosts_file_explains_itself(self):
         p = self.run_cli("--json", "--max-age", "60", hosts="# nothing yet\n")
@@ -482,6 +502,8 @@ pcall(dofile, os.getenv("HOME") .. "/x/hypr/ssh-border.lua")
             config = base / "fleetwatch"
             config.symlink_to(base / "dotfiles")
             with mock.patch.object(fleetwatch, "CONFIG_DIR", config), \
+                 mock.patch.object(fleetwatch, "FLEET_DIR", base / "no-fleet"), \
+                 mock.patch.object(fleetwatch, "HOSTS_FILE", base / "no-fleet" / "hosts"), \
                  mock.patch.object(fleetwatch, "CACHE_DIR", base / "none"), \
                  mock.patch.object(fleetwatch, "DISMISSED_FILE", base / "none" / "x.json"), \
                  mock.patch.object(fleetwatch, "LINK", base / "none-link"), \
@@ -491,6 +513,27 @@ pcall(dofile, os.getenv("HOME") .. "/x/hypr/ssh-border.lua")
                 action()
             self.assertFalse(config.is_symlink())
             self.assertEqual((base / "dotfiles" / "hosts").read_text(), "here local\n")
+
+    def test_hosts_go_only_when_no_other_fleet_tool_is_left(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fleet = Path(tmp) / "fleet"
+            (fleet / "watch").mkdir(parents=True)
+            (fleet / "hosts").write_text("here local\n")
+            with mock.patch.object(fleetwatch, "FLEET_DIR", fleet), \
+                 mock.patch.object(fleetwatch, "HOSTS_FILE", fleet / "hosts"), \
+                 mock.patch.object(fleetwatch, "CONFIG_DIR", fleet / "watch"), \
+                 mock.patch.object(fleetwatch, "CACHE_DIR", Path(tmp) / "none"), \
+                 mock.patch.object(fleetwatch, "DISMISSED_FILE", Path(tmp) / "none" / "x.json"), \
+                 mock.patch.object(fleetwatch, "LINK", Path(tmp) / "none-link"), \
+                 mock.patch.object(fleetwatch, "HYPR_FILE", Path(tmp) / "none.lua"):
+                (fleet / "drop").mkdir()
+                self.assertEqual([d for d, _ in fleetwatch.uninstall_plan() if "hosts" in d], [])
+                (fleet / "drop").rmdir()
+                plan = fleetwatch.uninstall_plan()
+                self.assertEqual(len(plan), 2)
+                for _, action in plan:
+                    action()
+            self.assertFalse(fleet.exists())
 
     def test_failed_write_leaves_no_temporary_file(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -1,13 +1,14 @@
-# Optional settings for Fleetwatch. Remove the # in front of a setting to turn it on.
+# Optional settings for Fleetwatch, in TOML. Remove the # in front of a
+# setting to turn it on.
 
 # Extra options for the ssh connections used for polling. Polling already
 # uses BatchMode (never prompts) and never forwards your agent.
-# ssh_options = -o IdentityAgent=none
+# ssh_options = "-o IdentityAgent=none"
 
 # An SSH agent socket to check on this machine: shows how many keys it holds,
 # or that it is locked or not running.
-# agent_socket = ~/.ssh/agent.sock
+# agent_socket = "~/.ssh/agent.sock"
 
 # On the other machines: a socket where an ssh session forwards your agent,
 # to see which machines you are currently logged in to with your keys.
-# forwarded_agent_socket = ~/.ssh/agent/forwarded.sock
+# forwarded_agent_socket = "~/.ssh/agent/forwarded.sock"

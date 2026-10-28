@@ -1,13 +1,13 @@
-# Machines watched by Fleetwatch, one per line:
+# Your machines, one per line, read by every Fleet tool:
 #
 #   <label>  <ssh target>  [<hostname>]
 #
-# The target is whatever you would type after `ssh`: a Host from ~/.ssh/config,
-# user@address, or an address. The line whose hostname matches the machine
-# you are on (or whose target is "local") runs locally, so the same file can be
-# copied to every machine in the list.
+# The target is whatever you would type after `ssh`. The line whose hostname
+# is the machine a tool runs on is read there without ssh, so the same file
+# works when copied to your other machines.
+# Format: https://github.com/Frestina/fleet/blob/main/HOSTS.md
 #
 # For example:
 #
-#   desktop    desktop.lan      desktop
-#   homeserver me@192.0.2.10    homeserver
+#   desktop     desktop.lan      desktop
+#   homeserver  me@192.0.2.10    homeserver

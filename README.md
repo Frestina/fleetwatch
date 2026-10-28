@@ -87,18 +87,22 @@ On the machines you watch, no Omarchy needed:
 omarchy plugin add https://github.com/Frestina/omarchy-fleetwatch --enable
 ```
 
-On its first run the widget creates `~/.config/fleetwatch/` with two
-files, and never replaces them once they exist:
+On its first run the widget creates two files, and never replaces them once
+they exist:
 
-- `hosts`: your machines, starting with the one you are on.
-- `config`: the [optional settings](#optional-settings), all switched off.
+- `~/.config/fleet/hosts`: your machines, starting with the one you are on.
+  It is the list every [Fleet](https://github.com/Frestina/fleet) tool
+  shares, so if you already use one, Fleetwatch reads the list that is there.
+- `~/.config/fleet/watch/config.toml`: the
+  [optional settings](#optional-settings), all switched off.
 
 Add your other machines with **Machines** at the bottom of the popup, which
 opens the list in your editor. Each line is `<label> <ssh target>
 [<hostname>]`. The target is whatever you would type after `ssh`. The line
 whose hostname matches the machine you are on, or whose target is `local`, is
 checked locally without ssh, so you can copy the same file to every machine.
-The widget checks again whenever you save.
+The widget checks again whenever you save. The full format is in
+[HOSTS.md](https://github.com/Frestina/fleet/blob/main/HOSTS.md).
 
 ### Or let your agent do it
 
@@ -122,7 +126,9 @@ ln -s ~/.config/omarchy/plugins/io.github.frestina.fleetwatch/bin/fleetwatch ~/.
 
 Open them with **Settings** at the bottom of the popup, and remove the `#` in
 front of a setting to turn it on. They are kept in
-`~/.config/fleetwatch/config`, as in [examples/config](examples/config).
+`~/.config/fleet/watch/config.toml`, as in
+[examples/config.toml](examples/config.toml). Values are TOML strings, in
+quotes: `ssh_options = "-o IdentityAgent=none"`.
 
 | Setting | Effect |
 | --- | --- |
@@ -183,15 +189,15 @@ themes where the border takes another colour, the two differ.
 - That runs a read-only shell script on each machine: locally with `bash`, on
   the others with `ssh -T -o BatchMode=yes -o ConnectTimeout=4 -o
   ForwardAgent=no`. It reads system state and changes nothing.
-- It creates `~/.config/fleetwatch/hosts` and `config` if they are
-  missing, and edits nothing after that.
-- The last result is cached in `~/.cache/fleetwatch/`.
+- It creates `~/.config/fleet/hosts` and `~/.config/fleet/watch/config.toml`
+  if they are missing, and edits nothing after that.
+- The last result is cached in `~/.cache/fleet/watch/`.
 - Crashes and warnings you dismiss are remembered in
-  `~/.local/state/fleetwatch/dismissed-crashes.json` and
+  `~/.local/state/fleet/watch/dismissed-crashes.json` and
   `dismissed-warnings.json`, on the machine you dismissed them from.
 - **Uninstall** removes only what is listed under [Remove](#remove), after
   asking.
-- Your machine list and settings stay in `~/.config/fleetwatch/` on your
+- Your machine list and settings stay in `~/.config/fleet/` on your
   machine; nothing is sent anywhere else.
 - **Set up with agent**, **Ask agent** and the agent button on an issue run
   `omarchy agent` with your default coding agent, which sends what it reads to
@@ -218,9 +224,12 @@ Choose **Uninstall** at the bottom of the popup, or run:
 It lists what the plugin and its setup left on this machine, and asks whether
 to remove all of it or only the plugin:
 
-- `~/.config/fleetwatch`, `~/.cache/fleetwatch` and
-  `~/.local/state/fleetwatch`. If one of them is a link, for example
+- `~/.config/fleet/watch`, `~/.cache/fleet/watch` and
+  `~/.local/state/fleet/watch`. If one of them is a link, for example
   into your dotfiles, only the link is removed, not what it points at.
+- `~/.config/fleet/hosts`, your list of machines, only when no other Fleet
+  tool's folder is left in `~/.config/fleet/`. Again, a link loses only the
+  link.
 - the `~/.local/bin/fleetwatch` link, if it points at this plugin
 - the [Know where you are](#know-where-you-are) border in
   `~/.config/hypr/hyprland.lua`. Only the block between the
@@ -244,7 +253,8 @@ from the Omarchy menu, deletes only the plugin folder. Delete the rest
 yourself:
 
 ```bash
-rm -r ~/.config/fleetwatch ~/.cache/fleetwatch ~/.local/state/fleetwatch
+rm -r ~/.config/fleet/watch ~/.cache/fleet/watch ~/.local/state/fleet/watch
+rm ~/.config/fleet/hosts     # only if no other Fleet tool uses it
 rm ~/.local/bin/fleetwatch   # if you linked the command
 ```
 

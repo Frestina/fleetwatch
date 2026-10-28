@@ -33,10 +33,12 @@ Panel {
   property real pendingSince: 0
 
   readonly property string command: decodeURIComponent(Qt.resolvedUrl("bin/fleetwatch").toString().replace(/^file:\/\//, ""))
-  // Matches CONFIG_DIR in bin/fleetwatch, which creates both files on first run.
-  readonly property string configDir: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/fleetwatch"
+  // Matches HOSTS_FILE and CONFIG_FILE in bin/fleetwatch, which creates both on first run.
+  readonly property string fleetDir: (Quickshell.env("XDG_CONFIG_HOME") || Quickshell.env("HOME") + "/.config") + "/fleet"
+  readonly property string hostsFile: fleetDir + "/hosts"
+  readonly property string configFile: fleetDir + "/watch/config.toml"
   // Matches DISMISSED_FILE in bin/fleetwatch.
-  readonly property string dismissedFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/fleetwatch/dismissed-crashes.json"
+  readonly property string dismissedFile: (Quickshell.env("XDG_STATE_HOME") || Quickshell.env("HOME") + "/.local/state") + "/fleet/watch/dismissed-crashes.json"
   // Matches QUIETED_FILE in bin/fleetwatch.
   readonly property string quietedFile: dismissedFile.replace(/dismissed-crashes\.json$/, "dismissed-warnings.json")
   readonly property int refreshSec: Math.max(60, Number(setting("refreshIntervalSec", 600)) || 600)
@@ -266,14 +268,14 @@ Panel {
   }
 
   FileView {
-    path: root.filesReady ? root.configDir + "/hosts" : ""
+    path: root.filesReady ? root.hostsFile : ""
     watchChanges: true
     printErrors: false
     onFileChanged: root.fileSaved()
   }
 
   FileView {
-    path: root.filesReady ? root.configDir + "/config" : ""
+    path: root.filesReady ? root.configFile : ""
     watchChanges: true
     printErrors: false
     onFileChanged: root.fileSaved()

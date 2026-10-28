@@ -10,8 +10,10 @@ goes in, you do the looking up and the typing.
 You may have been started with approvals switched off. Hold yourself to these
 regardless:
 
-- Write only `~/.config/fleetwatch/hosts` and
-  `~/.config/fleetwatch/config` (under `$XDG_CONFIG_HOME` if it is set).
+- Write only `~/.config/fleet/hosts` and
+  `~/.config/fleet/watch/config.toml` (under `$XDG_CONFIG_HOME` if it is
+  set). The hosts file is shared with the other Fleet tools: add and change
+  lines, never reorder or remove the user's.
   Both already exist; edit them in place and keep their comments. Only if the
   user accepts them: the link for [the terminal command](#the-terminal-command),
   and for [Know where you are](#know-where-you-are)
@@ -36,7 +38,8 @@ regardless:
   when copied to each listed machine. Fill it in for every line.
 - The file already lists this machine. Keep that line.
 
-`config`: optional `key = value` settings, all commented out to begin with.
+`config.toml`: optional settings, all commented out to begin with. Values are
+TOML strings in double quotes (`ssh_options = "-o IdentityAgent=none"`).
 Comments in the file explain each one.
 
 | Setting | Suggest it when |
@@ -48,7 +51,7 @@ Comments in the file explain each one.
 ## Set up already?
 
 Read both files first. If `hosts` lists only this machine and every setting
-in `config` is still commented out, this is a first setup: follow
+in `config.toml` is still commented out, this is a first setup: follow
 [Steps](#steps) from the start.
 
 Otherwise the user has set it up before, and is back to change something or
@@ -107,8 +110,9 @@ ask about it. Don't go through every step again:
    - That both settings files can be edited later from the widget's popup.
    - How to remove it all: **Uninstall** at the bottom of the widget's popup
      (or `bin/fleetwatch --uninstall`) asks first, then removes
-     `~/.config/fleetwatch`, `~/.cache/fleetwatch`,
-     `~/.local/state/fleetwatch`, the `~/.local/bin/fleetwatch` link and
+     `~/.config/fleet/watch`, `~/.cache/fleet/watch`,
+     `~/.local/state/fleet/watch`, `~/.config/fleet/hosts` when no other
+     Fleet tool uses it, the `~/.local/bin/fleetwatch` link and
      the `fleetwatch` block in `hyprland.lua`, and removes the plugin.
      It never touches `starship.toml`. If you changed it, tell the user that
      undoing it is up to them: take `$hostname` back out of `format` if you

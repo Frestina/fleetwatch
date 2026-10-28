@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Capture preview.png from the installed widget showing fictional machines.
 #
-# The widget reads ~/.cache/fleetwatch/last.json while it is fresh, so this
+# The widget reads ~/.cache/fleet/watch/last.json while it is fresh, so this
 # writes a report built from demo/fixtures/machines.json there, dated a few
 # minutes ahead so both --max-age and refresh-now (--since) serve it. It then
 # makes the widget refresh, opens the popup over IPC, captures it, restores
@@ -14,7 +14,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 region=${1:?usage: demo/run "<x>,<y> <w>x<h>"}
 id=io.github.frestina.fleetwatch
-cache=${XDG_CACHE_HOME:-$HOME/.cache}/fleetwatch/last.json
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/fleet/watch/last.json
 for cmd in python3 qs grim pgrep; do command -v "$cmd" >/dev/null || { echo "demo: missing $cmd" >&2; exit 1; }; done
 pid=$(pgrep -f '^quickshell .*omarchy/shell' | head -1 || true)
 [ -n "$pid" ] || { echo "demo: omarchy-shell is not running" >&2; exit 1; }

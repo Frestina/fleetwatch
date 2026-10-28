@@ -5,10 +5,12 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
 
 ## `bin/fleetwatch` (Python 3, standard library only)
 
-- Reads `~/.config/fleetwatch/hosts` and `config` (`$XDG_CONFIG_HOME` is
-  honoured). Every run first creates whichever is missing, with `open(…, "x")`
-  so an existing file is never replaced: `hosts` from `examples/hosts` plus a
-  line for this machine, `config` as `examples/config`.
+- Reads `~/.config/fleet/hosts`, shared by the Fleet tools in the format of
+  Fleet's HOSTS.md, and `~/.config/fleet/watch/config.toml`, parsed with
+  `tomllib` (`$XDG_CONFIG_HOME` is honoured). Every run first creates
+  whichever is missing, with `open(…, "x")` so an existing file is never
+  replaced: `hosts` from `examples/hosts` plus a line for this machine,
+  `config.toml` as `examples/config.toml`.
 - Runs one read-only bash collector per machine in parallel: `bash -s` for this
   machine, `ssh -T -o BatchMode=yes -o ConnectTimeout=4 -o ForwardAgent=no
   [ssh_options] -- <target> bash -s` for the others, with a 45 second deadline.
@@ -22,7 +24,7 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   when it matches `OFFLINE` (timeout, no route, name not resolving: off or out
   of reach, often on purpose) and `bad` otherwise. The terminal table and
   `--json` share it.
-- `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleetwatch/last.json`
+- `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleet/watch/last.json`
   under an exclusive `flock`, so the widget's copies on several monitors share
   one collection. The cache's mtime is when its collection started.
 
@@ -80,7 +82,7 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   the script has created all four.
 - A crash issue carries its crash ids
   (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
-  exactly those to `~/.local/state/fleetwatch/dismissed-crashes.json`.
+  exactly those to `~/.local/state/fleet/watch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.
 - A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `load`,
   `mem`, `disk`, `agent`) and an `until` for its dismiss button's tooltip. The button runs
@@ -102,8 +104,9 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   `refresh`.
 
 Nothing runs with elevated privileges, and nothing is installed outside the
-plugin folder. `omarchy plugin remove` leaves only `~/.config/fleetwatch`,
-`~/.cache/fleetwatch`, `~/.local/state/fleetwatch` and whatever the
-user or setup agent added; `--uninstall` removes all of that except the
-starship settings.
+plugin folder. `omarchy plugin remove` leaves only `~/.config/fleet/watch`,
+`~/.cache/fleet/watch`, `~/.local/state/fleet/watch`, the shared
+`~/.config/fleet/hosts` and whatever the user or setup agent added;
+`--uninstall` removes all of that except the starship settings, and the hosts
+file while another Fleet tool uses it.
 Node.js is a development dependency for the repository checks only.
