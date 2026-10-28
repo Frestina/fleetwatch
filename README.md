@@ -2,6 +2,8 @@
 
 <p align="center">See at a glance which of your machines needs attention: load, memory, disk, pending updates, failed units and crashes, checked locally and over ssh. The machines you watch can run any Linux; only the one with the bar needs Omarchy.</p>
 
+<p align="center">Part of <a href="https://github.com/Frestina/fleet">Fleet</a>: fleetwatch · fleetlog · fleetdrop</p>
+
 <p align="center"><a href="https://github.com/tcballard/omarchy-badges"><img alt="Built for Omarchy: Plugin" height="20" src="https://raw.githubusercontent.com/tcballard/omarchy-badges/75975e5b5bf75e7ede3764bcd2950046f7abfe2c/badges/v1/omarchy-plugin.svg"></a></p>
 
 <p align="center"><img alt="The Fleetwatch popup listing four machines: one fine, one with a reboot note and a crash in orange, one with a full disk and a failed unit in red, and one switched off, in orange. Each issue has an agent button, and each orange one a broom to dismiss it" src="preview.png" width="400"></p>
