@@ -44,7 +44,6 @@ Comments in the file explain each one.
 | `ssh_options` | The user's ssh agent asks for approval on each use (Bitwarden, 1Password, KeePassXC). Polling would then show every machine as unreachable, so suggest `-o IdentityAgent=none` together with a key that works without the agent, or explain the trade-off. |
 | `agent_socket` | They use an ssh agent socket that is not the default (look at `SSH_AUTH_SOCK` and `IdentityAgent` in `~/.ssh/config`) and want to see whether it is running and unlocked. |
 | `forwarded_agent_socket` | They forward their agent to the other machines through a fixed socket path (an `~/.ssh/rc` that links `SSH_AUTH_SOCK` somewhere). Only when such a setup already exists. |
-| `repo` (one line per repository) | They want to follow git repositories: dotfiles (often `~/dotfiles` or `~/.dotfiles`) kept on several machines, or a project that lives on one machine they ssh into. The path is checked on every machine, so a repository on several machines needs the same path on each. Ask which; don't scan their disks. Each needs an upstream branch. |
 
 ## Set up already?
 

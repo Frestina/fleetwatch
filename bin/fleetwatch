@@ -3,8 +3,8 @@
 
 Runs a small collector script on each machine (locally for this one, over ssh
 for the rest) and prints a table: uptime, load, memory, disk, pending updates,
-reboot needed, failed systemd units and crashes in the last 7 days. Optional
-checks, an SSH agent and git repositories, are switched on in the config file.
+reboot needed, failed systemd units and crashes in the last 7 days. An
+optional check of an SSH agent is switched on in the config file.
 
 Your machines are listed in ~/.config/fleetwatch/hosts, one per line:
 
@@ -19,8 +19,6 @@ Optional settings go in ~/.config/fleetwatch/config as `key = value` lines:
     ssh_options = -o IdentityAgent=none    extra options for polling ssh
     agent_socket = ~/.ssh/agent.sock       SSH agent to check on this machine
     forwarded_agent_socket = ~/.ssh/fwd.sock   agent to check on the others
-    repo = ~/dotfiles                      git repo to compare across machines;
-    repo = ~/Projects/app                  one line per repo, a column each
 
 Polling never forwards your agent and never prompts (BatchMode), so a machine
 that needs a password or key approval shows as unreachable. A machine that is
@@ -100,7 +98,7 @@ TIMEOUT = 45  # checkupdates and the AUR query hit the network
 OFFLINE = re.compile(r"Connection timed out|Operation timed out|No route to host|Network is unreachable|"
                      r"Host is down|Could not resolve hostname|Name or service not known|"
                      r"Temporary failure in name resolution")
-CONFIG_KEYS = {"ssh_options", "agent_socket", "forwarded_agent_socket", "repo"}
+CONFIG_KEYS = {"ssh_options", "agent_socket", "forwarded_agent_socket"}
 
 COLLECTOR = r"""
 export LC_ALL=C
@@ -146,18 +144,6 @@ agent() {
 	case $rc in 0|1) echo "$n" ;; 124) echo timeout ;; *) echo none ;; esac
 }
 [ -n "$AGENT_SOCK" ] && kv agent "$(agent "$AGENT_SOCK")"
-
-# Numbered like the config's repo lines. .git is a file in a worktree.
-i=0
-for repo in "${REPOS[@]}"; do
-	if [ -e "$repo/.git" ]; then
-		kv "repo${i}_head" "$(git -C "$repo" rev-parse HEAD)"
-		kv "repo${i}_dirty" "$(git -C "$repo" status --porcelain | grep -c .)"
-		kv "repo${i}_unpushed" "$(git -C "$repo" rev-list --count '@{u}..HEAD' 2>/dev/null || echo '?')"
-		kv "repo${i}_behind" "$(git -C "$repo" rev-list --count 'HEAD..@{u}' 2>/dev/null || echo '?')"
-	fi
-	i=$((i + 1))
-done
 """
 
 BASE_SSH_OPTS = [
@@ -211,10 +197,8 @@ def read_hosts():
 
 
 def read_config():
-    """The settings as a dict; repo lines gather in order into
-    config["repos"]."""
+    """The settings as a dict."""
     config = {}
-    repos = []
     try:
         text = CONFIG_FILE.read_text()
     except FileNotFoundError:
@@ -226,27 +210,8 @@ def read_config():
         key, sep, value = (p.strip() for p in line.partition("="))
         if not sep or key not in CONFIG_KEYS:
             raise ValueError(f"{CONFIG_FILE}:{n}: expected one of {', '.join(sorted(CONFIG_KEYS))} = value")
-        if key == "repo":
-            if value not in repos:
-                repos.append(value)
-        else:
-            config[key] = value
-    if repos:
-        config["repos"] = repos
+        config[key] = value
     return config
-
-
-def repo_columns(config):
-    """(header, path) per repo: its folder's name, with the parent folder's
-    when two repos share one or it is already a column's name."""
-    paths = config.get("repos", [])
-
-    def name(path, parts):
-        return "/".join(Path(path.rstrip("/")).parts[-parts:]).upper() or path
-
-    names = [name(p, 1) for p in paths]
-    return [(name(p, 2) if names.count(n) > 1 or n in BASE_HEADERS + ["AGENT"] else n, p)
-            for n, p in zip(names, paths)]
 
 
 def shell_path(path):
@@ -347,8 +312,7 @@ def is_local(host):
 def collect(host, config):
     local = is_local(host)
     sock = config.get("agent_socket" if local else "forwarded_agent_socket")
-    prelude = (f"AGENT_SOCK={shell_path(sock)}\n" if sock else "") + \
-        f"REPOS=({' '.join(shell_path(r) for r in config.get('repos', []))})\n"
+    prelude = f"AGENT_SOCK={shell_path(sock)}\n" if sock else ""
     ssh = ["ssh", *BASE_SSH_OPTS, *shlex.split(config.get("ssh_options", "")), "--", host["target"]]
     cmd = ["bash", "-s"] if local else [*ssh, "bash", "-s"]
     try:
@@ -372,28 +336,6 @@ def collect_all(hosts, config):
         return list(pool.map(lambda h: collect(h, config), hosts))
 
 
-def repo_vs_upstream(sha, repo_path):
-    """How a machine's HEAD of a repo relates to the upstream branch as this
-    machine last saw it, or None when this machine has no copy that knows the
-    commit (a project that lives only on the other machine)."""
-    repo = ["git", "-C", os.path.expanduser(repo_path)]
-
-    def git(*args):
-        return subprocess.run(repo + list(args), capture_output=True, text=True)
-
-    # The sha comes from the far side; only a plain object id reaches git,
-    # never something it could read as an option.
-    if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", sha) or git("cat-file", "-e", sha + "^{commit}").returncode:
-        return None
-    upstream = git("rev-parse", "@{u}").stdout.strip()
-    if not upstream or sha == upstream:
-        return "" if upstream else "no upstream branch"
-    behind = git("rev-list", "--count", f"{sha}..{upstream}").stdout.strip()
-    ahead = git("rev-list", "--count", f"{upstream}..{sha}").stdout.strip()
-    return ", ".join(p for p in [f"{behind} behind" if behind != "0" else "",
-                                 f"{ahead} ahead" if ahead != "0" else ""] if p)
-
-
 # --- assessing ----------------------------------------------------------------
 
 BASE_HEADERS = ["MACHINE", "UP", "LOAD", "MEM", "DISK /", "UPDATES", "FAILED", "CRASHES"]
@@ -404,14 +346,11 @@ RANK = {"bad": 2, "warn": 1}
 UNTIL = {"unreachable": "until it is reachable again", "reboot": "until the next reboot",
          "updates": "until you update", "load": "until it clears", "mem": "until it clears",
          "disk": "until it clears", "agent": "until it clears"}
-# Listed with the issues, but never a reason for attention: a repo out of sync
-# is often work in progress.
-INFO = "info"
 
 
 def headers(config):
     has_agent = "agent_socket" in config or "forwarded_agent_socket" in config
-    return BASE_HEADERS + (["AGENT"] if has_agent else []) + [h for h, _ in repo_columns(config)]
+    return BASE_HEADERS + (["AGENT"] if has_agent else [])
 
 
 def duration(seconds):
@@ -475,9 +414,6 @@ def cells(m, config, details, dismissed=()):
 
     if "AGENT" in headers(config):
         out.append(agent_cell(m))
-
-    for i, (_, path) in enumerate(repo_columns(config)):
-        out.append(repo_cell(m, f"repo{i}_", path))
     return out
 
 
@@ -496,46 +432,20 @@ def agent_cell(m):
     return (f"{state} keys" + ("" if m["local"] else " fwd"), "ok")
 
 
-def repo_cell(m, key, repo_path):
-    """One repo on one machine; key is the prefix of its facts (repo0_)."""
-    head = m.get(key + "head")
-    if head is None:
-        return ("-", "dim")
-    issues = []
-    unpushed, dirty = m.get(key + "unpushed", "?"), m.get(key + "dirty", "0")
-    if unpushed not in ("0", "?"):
-        issues.append(f"{unpushed} unpushed")
-    elif (rel := repo_vs_upstream(head, repo_path)) is None:
-        # Not placeable here: fall back on how far behind the machine counts
-        # itself, as of its own last fetch.
-        behind = m.get(key + "behind", "?")
-        if unpushed == "?":
-            issues.append("no upstream branch")
-        elif behind.isdigit() and behind != "0":
-            issues.append(f"{behind} behind")
-    elif rel:
-        issues.append(rel)
-    if dirty != "0":
-        issues.append(f"{dirty} uncommitted")
-    return (" ".join([head[:7], ", ".join(issues)]).strip(), INFO if issues else "ok")
-
-
 def assess(m, config, dismissed=(), quieted=()):
     """The view of one machine shared by the table and --json (the bar widget):
-    display cells, detail lines, every issue with its severity, the state of
-    each repo it has, and a status. Repos are never issues: being out of sync
-    is often work in progress. dismissed: crash ids to leave out; quieted:
+    display cells, detail lines, every issue with its severity, and a
+    status. dismissed: crash ids to leave out; quieted:
     keys of warnings to leave out, as long as they are only warnings.
     "warnings" lists the key of every warning, quieted or not."""
     details = []
     row = cells(m, config, details, dismissed)
     issues = [{"severity": d[0], "text": d[1], **(d[2] if len(d) > 2 else {})} for d in details]
-    repo_headers = {h for h, _ in repo_columns(config)}
     if "error" not in m:  # the error already says why every cell is empty
         issues += [{"severity": style, "text": f"{h.lower()}: {text}",
                     **({"key": h.lower().split()[0]} if style == "warn" else {})}
                    for h, (text, style) in zip(headers(config), row)
-                   if style in RANK and h not in EXPLAINED and h not in repo_headers]
+                   if style in RANK and h not in EXPLAINED]
     warnings = {i["key"] for i in issues if i["severity"] == "warn" and "key" in i}
     for i in issues:
         if i["severity"] == "warn" and "key" in i:
@@ -543,20 +453,16 @@ def assess(m, config, dismissed=(), quieted=()):
     issues = [i for i in issues if not (i["severity"] == "warn" and i.get("key") in quieted)]
     details = [d for d in details
                if not (d[0] == "warn" and len(d) > 2 and d[2].get("key") in quieted)]
-    repos = [{"name": h.lower(), "status": style,
-              "text": text.partition(" ")[2] if style == INFO else "up to date"}
-             for h, (text, style) in zip(headers(config), row)
-             if h in repo_headers and style in ("ok", INFO)]
     worst = max((RANK.get(i["severity"], 0) for i in issues), default=0)
     status = {2: "bad", 1: "warn", 0: "ok"}[worst]
-    return {"cells": row, "details": details, "issues": issues, "repos": repos, "status": status,
+    return {"cells": row, "details": details, "issues": issues, "status": status,
             "warnings": warnings}
 
 
 # --- rendering ----------------------------------------------------------------
 
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
-STYLES = {"ok": "32", "info": "36", "warn": "33", "bad": "1;31", "dim": "2", "bold": "1"}
+STYLES = {"ok": "32", "warn": "33", "bad": "1;31", "dim": "2", "bold": "1"}
 
 
 def paint(text, style):
@@ -594,7 +500,7 @@ def render(machines, config):
 def json_report(machines, config):
     cols = headers(config)
     for m, v in zip(machines, assess_all(machines, config)):
-        m["view"] = {"status": v["status"], "issues": v["issues"], "repos": v["repos"],
+        m["view"] = {"status": v["status"], "issues": v["issues"],
                      "columns": {h: {"text": t, "style": st} for h, (t, st) in zip(cols, v["cells"])}}
     return json.dumps(machines, indent=2)
 

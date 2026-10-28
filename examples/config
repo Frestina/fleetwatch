@@ -11,10 +11,3 @@
 # On the other machines: a socket where an ssh session forwards your agent,
 # to see which machines you are currently logged in to with your keys.
 # forwarded_agent_socket = ~/.ssh/agent/forwarded.sock
-
-# Git repositories to follow, one line each: uncommitted and unpushed
-# changes, and how far each machine is behind. Each gets a column named after
-# its folder. Every machine with a repository at that path reports it, so a
-# project that lives only on a machine you ssh into works too.
-# repo = ~/dotfiles
-# repo = ~/Projects/my-app

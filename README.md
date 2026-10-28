@@ -49,7 +49,7 @@ like to change, instead of going through the setup again.
 | Updates | 50 or more pending, or the running kernel was upgraded and needs a reboot (pacman with `checkupdates`, `yay` for AUR, or apt) |
 | Failed units | any failed systemd unit, system or user |
 | Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the broom on their line in the popup; only crashes after that show. |
-| Agent, git repositories | optional, see [settings](#optional-settings) |
+| Agent | optional, see [settings](#optional-settings) |
 
 A machine that cannot be reached within a few seconds shows as unreachable,
 with the ssh error. When it looks off or out of reach (the connection times
@@ -129,10 +129,13 @@ front of a setting to turn it on. They are kept in
 | `ssh_options` | Extra options for the polling ssh connections, for example `-o IdentityAgent=none` to keep a password manager's agent from asking for approval on every check. |
 | `agent_socket` | Adds an AGENT column: whether this agent is running and unlocked on this machine. |
 | `forwarded_agent_socket` | On the other machines: whether an ssh session has forwarded your agent there right now. |
-| `repo` | Adds a column, named after the folder, comparing a git repository across machines: uncommitted and unpushed changes, and commits behind or ahead of its upstream. One line per repository. Every machine with a repository at that path reports it, and the others show `-`, so a project that lives only on a machine you ssh into works too. The popup folds them under each machine that has them, into one line that counts them and how many are out of sync; click it to list each repository, muted when up to date and in full when out of sync. It never counts as needing attention. |
 
 The refresh interval (10 minutes by default) is a widget setting in the bar
 settings.
+
+Fleetwatch is about the machines' health. For where your git repositories
+stand on each machine (unpushed commits, uncommitted changes), use
+[git-fleetlog](https://github.com/Frestina/git-fleetlog).
 
 ## Know where you are
 

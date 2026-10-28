@@ -12,21 +12,15 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
 - Runs one read-only bash collector per machine in parallel: `bash -s` for this
   machine, `ssh -T -o BatchMode=yes -o ConnectTimeout=4 -o ForwardAgent=no
   [ssh_options] -- <target> bash -s` for the others, with a 45 second deadline.
-  Optional checks receive their paths as shell-quoted variables ahead of the
-  script (`REPOS=(…)` for the `repo` lines, numbered `repo0_…` in its
-  report); `~/` expands on the far side. A repo's HEAD comes back from the far
-  side, so only a plain object id is passed to git here. Behind and ahead
-  are measured against this machine's copy of the repo; when it has none, or
-  doesn't know that commit, the far side's own count from its last fetch is
-  used instead.
+  The agent check receives its socket path as a shell-quoted variable ahead
+  of the script (`AGENT_SOCK=…`); `~/` expands on the far side.
 - The far side only reports `key=value` facts. Fields that identify the machine
   (`label`, `target`, `local`) and the computed `error` and `view` always come
   from this side, so a machine cannot redirect the widget's ssh click.
 - `assess()` turns facts into display cells, issues with a severity, and a
   status (`ok`, `warn`, `bad`). An unreachable machine's ssh error is a `warn`
   when it matches `OFFLINE` (timeout, no route, name not resolving: off or out
-  of reach, often on purpose) and `bad` otherwise. Repository issues have the
-  severity `info`: listed, but never raising the status. The terminal table and
+  of reach, often on purpose) and `bad` otherwise. The terminal table and
   `--json` share it.
 - `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleetwatch/last.json`
   under an exclusive `flock`, so the widget's copies on several monitors share
@@ -84,8 +78,7 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   monitor shares one check. A watch only takes on an existing file, so the
   watchers get their paths after the first successful check, by which time
   the script has created all four.
-- Repos are listed per machine from the view's `repos` (`ok` muted, `info` in
-  full), never as issues. A crash issue carries its crash ids
+- A crash issue carries its crash ids
   (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleetwatch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.

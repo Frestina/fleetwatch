@@ -75,13 +75,8 @@ class HostsAndConfig(ConfigDir):
         self.assertEqual(fleetwatch.read_config(), {})
 
     def test_config_keys(self):
-        (self.base / "config").write_text("# optional\nrepo = ~/dotfiles\nssh_options = -o IdentityAgent=none\n")
-        self.assertEqual(fleetwatch.read_config(),
-                         {"repos": ["~/dotfiles"], "ssh_options": "-o IdentityAgent=none"})
-
-    def test_repos_gather_in_order(self):
-        (self.base / "config").write_text("repo = ~/dotfiles\nrepo = ~/Projects/app\nrepo = ~/dotfiles\n")
-        self.assertEqual(fleetwatch.read_config(), {"repos": ["~/dotfiles", "~/Projects/app"]})
+        (self.base / "config").write_text("# optional\nssh_options = -o IdentityAgent=none\n")
+        self.assertEqual(fleetwatch.read_config(), {"ssh_options": "-o IdentityAgent=none"})
 
     def test_unknown_config_key_is_an_error(self):
         (self.base / "config").write_text("colour = red\n")
@@ -117,7 +112,7 @@ class Collect(unittest.TestCase):
     def test_ssh_command(self):
         host = {"label": "desktop", "target": "desktop.lan", "hostname": None}
         config = {"ssh_options": "-o IdentityAgent=none", "forwarded_agent_socket": "~/fwd.sock",
-                  "agent_socket": "~/local.sock", "repos": ["~/dots", "/srv/my app"]}
+                  "agent_socket": "~/local.sock"}
         with self.fake_run("hostname=desktop\n") as run:
             fleetwatch.collect(host, config)
         cmd = run.call_args.args[0]
@@ -128,7 +123,7 @@ class Collect(unittest.TestCase):
         self.assertIn("IdentityAgent=none", cmd[:cmd.index("--")])
         script = run.call_args.kwargs["input"]
         self.assertIn('AGENT_SOCK="$HOME"/fwd.sock\n', script)
-        self.assertIn('REPOS=("$HOME"/dots \'/srv/my app\')\n', script)
+        self.assertNotIn("REPOS", script)
 
     def test_local_machine_runs_without_ssh(self):
         host = {"label": "here", "target": "local", "hostname": None}
@@ -203,7 +198,7 @@ class Assess(unittest.TestCase):
 
     def test_optional_columns_follow_config(self):
         self.assertEqual(fleetwatch.headers({}), fleetwatch.BASE_HEADERS)
-        self.assertEqual(fleetwatch.headers({"agent_socket": "x", "repos": ["~/dotfiles"]})[-2:], ["AGENT", "DOTFILES"])
+        self.assertEqual(fleetwatch.headers({"agent_socket": "x"})[-1:], ["AGENT"])
         v = self.status({"agent_socket": "x"}, local=True, agent="0")
         self.assertEqual(v["cells"][-1], ("locked (0 keys)", "warn"))
         self.assertEqual(v["status"], "warn")
@@ -323,53 +318,6 @@ class Actions(unittest.TestCase):
             self.assertEqual(fleetwatch.agent_command(), ["omarchy-menu", "summon", "setup.default.agent"])
 
 
-class Repos(unittest.TestCase):
-    SHA = "a" * 40
-
-    def test_columns_are_named_after_folders(self):
-        config = {"repos": ["~/dotfiles", "~/work/app", "~/play/app/", "~/load"]}
-        self.assertEqual([h for h, _ in fleetwatch.repo_columns(config)],
-                         ["DOTFILES", "WORK/APP", "PLAY/APP", "~/LOAD"])
-
-    def test_each_repo_has_its_own_cell(self):
-        config = {"repos": ["~/dotfiles", "~/Projects/app"]}
-        m = {**HEALTHY, "repo0_head": self.SHA, "repo0_dirty": "0", "repo0_unpushed": "0",
-             "repo1_head": self.SHA, "repo1_dirty": "2", "repo1_unpushed": "1"}
-        with mock.patch.object(fleetwatch, "repo_vs_upstream", return_value=""):
-            v = fleetwatch.assess(m, config)
-        self.assertEqual(v["cells"][-2:], [("aaaaaaa", "ok"), ("aaaaaaa 1 unpushed, 2 uncommitted", "info")])
-        # Always listed, never a reason for attention.
-        self.assertEqual(v["issues"], [])
-        self.assertEqual(v["repos"], [{"name": "dotfiles", "status": "ok", "text": "up to date"},
-                                      {"name": "app", "status": "info", "text": "1 unpushed, 2 uncommitted"}])
-        self.assertEqual(v["status"], "ok")
-
-    def test_missing_repo_is_dim_and_not_listed(self):
-        with mock.patch.object(fleetwatch, "repo_vs_upstream", return_value=""):
-            v = fleetwatch.assess({**HEALTHY, "repo1_head": self.SHA, "repo1_dirty": "0", "repo1_unpushed": "0"},
-                                {"repos": ["~/a", "~/b"]})
-        self.assertEqual(v["cells"][-2], ("-", "dim"))
-        self.assertEqual([r["name"] for r in v["repos"]], ["b"])
-
-    def test_far_side_sha_never_reaches_git_as_an_option(self):
-        with mock.patch("subprocess.run") as run:
-            self.assertIsNone(fleetwatch.repo_vs_upstream("--output=/tmp/x", "~/dotfiles"))
-        run.assert_not_called()
-
-    def test_repo_only_on_the_other_machine_counts_itself(self):
-        m = {**HEALTHY, "repo0_head": self.SHA, "repo0_dirty": "0", "repo0_unpushed": "0", "repo0_behind": "4"}
-        with mock.patch.object(fleetwatch, "repo_vs_upstream", return_value=None):
-            self.assertEqual(fleetwatch.repo_cell(m, "repo0_", "~/Projects/app"), ("aaaaaaa 4 behind", "info"))
-            self.assertEqual(fleetwatch.repo_cell({**m, "repo0_behind": "0"}, "repo0_", "~/Projects/app"), ("aaaaaaa", "ok"))
-            self.assertEqual(fleetwatch.repo_cell({**m, "repo0_unpushed": "?", "repo0_behind": "?"}, "repo0_", "~/app"),
-                             ("aaaaaaa no upstream branch", "info"))
-
-    def test_this_machines_copy_wins_when_it_knows_the_commit(self):
-        m = {**HEALTHY, "repo0_head": self.SHA, "repo0_dirty": "0", "repo0_unpushed": "0", "repo0_behind": "0"}
-        with mock.patch.object(fleetwatch, "repo_vs_upstream", return_value="2 behind"):
-            self.assertEqual(fleetwatch.repo_cell(m, "repo0_", "~/dotfiles"), ("aaaaaaa 2 behind", "info"))
-
-
 class DismissedCrashes(ConfigDir):
     def setUp(self):
         super().setUp()
@@ -461,25 +409,6 @@ class EndToEnd(unittest.TestCase):
         p = self.run_cli("--edit", "secrets", hosts="")
         self.assertEqual(p.returncode, 2)
         self.assertIn("hosts or config", p.stderr)
-
-    def test_repo_on_this_machine(self):
-        with tempfile.TemporaryDirectory() as repo:
-            git = ["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@example.com"]
-            subprocess.run(["git", "init", "-q", repo], check=True)
-            subprocess.run([*git, "commit", "-q", "--allow-empty", "-m", "start"], check=True)
-            Path(repo, "new").write_text("x")
-            with tempfile.TemporaryDirectory() as tmp:
-                os.makedirs(f"{tmp}/fleetwatch")
-                Path(f"{tmp}/fleetwatch/hosts").write_text("here local\n")
-                Path(f"{tmp}/fleetwatch/config").write_text(f"repo = {repo}\n")
-                env = {**os.environ, "XDG_CONFIG_HOME": tmp, "XDG_CACHE_HOME": f"{tmp}/cache", "XDG_STATE_HOME": f"{tmp}/state"}
-                p = subprocess.run([sys.executable, str(SCRIPT), "--json"], capture_output=True,
-                                   text=True, env=env, timeout=120)
-        self.assertEqual(p.returncode, 0, p.stderr)
-        [m] = json.loads(p.stdout)
-        cell = m["view"]["columns"][Path(repo).name.upper()]
-        self.assertEqual(cell["style"], "info")
-        self.assertTrue(cell["text"].endswith("no upstream branch, 1 uncommitted"), cell["text"])
 
     def test_local_json(self):
         p = self.run_cli("--json", hosts="here local\n")
