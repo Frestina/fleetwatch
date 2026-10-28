@@ -84,7 +84,7 @@ On the machines you watch, no Omarchy needed:
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/Frestina/omarchy-fleetwatch --enable
+omarchy plugin add https://github.com/Frestina/fleetwatch --enable
 ```
 
 On its first run the widget creates two files, and never replaces them once
@@ -141,7 +141,7 @@ settings.
 
 Fleetwatch is about the machines' health. For where your git repositories
 stand on each machine (unpushed commits, uncommitted changes), use
-[git-fleetlog](https://github.com/Frestina/git-fleetlog).
+[fleetlog](https://github.com/Frestina/fleetlog).
 
 ## Know where you are
 

@@ -714,7 +714,7 @@ def uninstall():
             except OSError as e:
                 print(f"fleetwatch: could not remove {description}: {e.strerror or e}", file=sys.stderr)
     print("\nThe machine's name in your starship prompt, if you added it, is left as it is.")
-    print("To remove it, see Remove in https://github.com/Frestina/omarchy-fleetwatch#remove")
+    print("To remove it, see Remove in https://github.com/Frestina/fleetwatch#remove")
     return 0
 
 
