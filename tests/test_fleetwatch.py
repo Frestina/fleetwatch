@@ -123,10 +123,16 @@ class Collect(unittest.TestCase):
 
     def test_far_side_cannot_override_identity(self):
         host = {"label": "desktop", "target": "desktop.lan", "hostname": "desktop"}
-        with self.fake_run("hostname=desktop\nlabel=evil\ntarget=-oProxyCommand=x\nlocal=True\nview=x\n"):
+        with self.fake_run("hostname=desktop\nlabel=evil\ntarget=-oProxyCommand=x\nlocal=True\nview=x\nunchecked=\n"):
             m = fleetwatch.collect(host, {})
         self.assertEqual((m["label"], m["target"], m["local"]), ("desktop", "desktop.lan", False))
         self.assertNotIn("view", m)
+
+    def test_report_cut_off_is_an_error_not_a_clean_machine(self):
+        host = {"label": "desktop", "target": "desktop.lan", "hostname": "desktop"}
+        with self.fake_run("hostname=desktop\nuptime_s=1\n", 255, "Connection reset by peer\n"):
+            m = fleetwatch.collect(host, {})
+        self.assertEqual(m["error"], "Connection reset by peer")
 
     def test_ssh_command(self):
         host = {"label": "desktop", "target": "desktop.lan", "hostname": None}
@@ -159,6 +165,79 @@ class Collect(unittest.TestCase):
         self.assertEqual(m["error"], "ssh: connect: No route to host")
 
 
+class Collector(unittest.TestCase):
+    """The real collector, with the tools it asks about stubbed. PATH holds only
+    the tools listed here, so one left out is a tool the machine doesn't have."""
+
+    TOOLS = "awk cut df grep hostname id nproc tr uname wc".split()
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.bin = Path(tmp.name)
+        for tool in self.TOOLS:
+            (self.bin / tool).symlink_to(shutil.which(tool))
+
+    def stub(self, name, script):
+        path = self.bin / name
+        path.unlink(missing_ok=True)
+        path.write_text(f"#!{shutil.which('bash')}\n{script}\n")
+        path.chmod(0o755)
+
+    def run_collector(self):
+        p = subprocess.run([shutil.which("bash"), "-s"], input=fleetwatch.COLLECTOR, text=True,
+                           capture_output=True, env={"PATH": str(self.bin)})
+        return dict(l.split("=", 1) for l in p.stdout.splitlines() if "=" in l)
+
+    def test_tools_the_machine_lacks_are_skipped(self):
+        data = self.run_collector()
+        self.assertEqual(data["unchecked"], "")
+        self.assertNotIn("failed", data)
+        self.assertNotIn("crashes", data)
+
+    @unittest.skipUnless(os.path.isdir("/run/systemd/system"), "needs systemd")
+    def test_failing_systemctl_is_unchecked_not_empty(self):
+        self.stub("systemctl", 'if [ "$1" = --user ]; then exit 1; fi; echo "a.service loaded failed failed A"')
+        data = self.run_collector()
+        self.assertEqual(data["failed"], "a.service ")
+        self.assertNotIn("failed_user", data)
+        self.assertEqual(data["unchecked"].split(), ["failed_user"])
+
+    def test_no_coredumps_is_a_clean_answer(self):
+        self.stub("coredumpctl", 'echo "No coredumps found." >&2; exit 1')
+        data = self.run_collector()
+        self.assertEqual((data["crashes"], data["unchecked"]), ("[]", ""))
+
+    def test_coredumps_are_collected(self):
+        self.stub("coredumpctl", 'printf \'[\\n{"pid": 1}\\n]\\n\'')
+        self.assertEqual(self.run_collector()["crashes"], '[{"pid": 1}]')
+
+    def test_failing_coredumpctl_is_unchecked(self):
+        self.stub("coredumpctl", 'echo "Failed to open journal files" >&2; exit 1')
+        data = self.run_collector()
+        self.assertNotIn("crashes", data)
+        self.assertEqual(data["unchecked"].split(), ["crashes"])
+
+    @unittest.skipUnless(os.path.isdir(f"/run/user/{os.getuid()}"), "needs a runtime dir")
+    def test_runtime_dir_is_measured(self):
+        data = self.run_collector()
+        self.assertTrue(data["runtime_pct"].isdigit())
+        self.assertTrue(data["runtime_free"])
+
+    def test_no_runtime_dir_is_skipped(self):
+        self.stub("id", "echo 4294967")
+        data = self.run_collector()
+        self.assertNotIn("runtime_pct", data)
+        self.assertEqual(data["unchecked"], "")
+
+    @unittest.skipUnless(os.path.isdir(f"/run/user/{os.getuid()}"), "needs a runtime dir")
+    def test_failing_df_on_the_runtime_dir_is_unchecked(self):
+        self.stub("df", 'case "$*" in *" /") exec ' + shutil.which("df") + ' "$@";; esac; exit 1')
+        data = self.run_collector()
+        self.assertNotIn("runtime_pct", data)
+        self.assertEqual(data["unchecked"].split(), ["runtime"])
+
+
 class Assess(unittest.TestCase):
     def status(self, config=None, **changes):
         return fleetwatch.assess({**HEALTHY, **changes}, config or {})
@@ -173,6 +252,42 @@ class Assess(unittest.TestCase):
         v = self.status(disk_pct="93")
         self.assertEqual(v["status"], "bad")
         self.assertIn({"severity": "bad", "text": "disk /: 93% (137G free)"}, v["issues"])
+
+    def test_runtime_dir_stays_out_of_sight_while_healthy(self):
+        v = self.status(runtime_pct="79", runtime_free="80M")
+        self.assertEqual((v["status"], v["issues"]), ("ok", []))
+
+    def test_filling_runtime_dir_warns(self):
+        v = self.status(runtime_pct="85", runtime_free="57M")
+        self.assertEqual(v["issues"], [{"severity": "warn", "text": "runtime dir: 85% full (57M free)",
+                                        "key": "runtime", "until": "until it clears"}])
+        self.assertEqual(len(v["cells"]), len(fleetwatch.BASE_HEADERS))
+
+    def test_full_runtime_dir_is_bad(self):
+        v = self.status(runtime_pct="100", runtime_free="0")
+        self.assertEqual(v["status"], "bad")
+        self.assertEqual(v["issues"], [{"severity": "bad", "text": "runtime dir: 100% full (0 free)"}])
+
+    def test_what_could_not_be_checked_is_not_clean(self):
+        v = self.status(unchecked="failed_user crashes ")
+        self.assertEqual(v["status"], "warn")
+        self.assertEqual(v["issues"], [{"severity": "warn", "text": "couldn't check: failed user units, crashes",
+                                        "key": "unchecked", "until": "until it can be checked"}])
+        columns = dict(zip(fleetwatch.BASE_HEADERS, v["cells"]))
+        self.assertEqual(columns["FAILED"], ("?", "warn"))
+        self.assertEqual(columns["CRASHES"], ("?", "warn"))
+
+    def test_known_failures_show_when_the_rest_could_not_be_checked(self):
+        v = self.status(failed="a.service ", unchecked="failed_user ")
+        self.assertEqual(v["status"], "bad")
+        self.assertEqual(dict(zip(fleetwatch.BASE_HEADERS, v["cells"]))["FAILED"], ("1", "bad"))
+
+    def test_crash_list_that_is_not_json_could_not_be_checked(self):
+        v = self.status(crashes="[{oops")
+        self.assertEqual(v["issues"][0]["text"], "couldn't check: crashes")
+
+    def test_unknown_unchecked_names_are_ignored(self):
+        self.assertEqual(self.status(unchecked="nonsense ")["issues"], [])
 
     def test_reboot_and_crashes_warn(self):
         crash = json.dumps([{"exe": "/usr/bin/ghostty"}, {"exe": "/usr/bin/ghostty"}])

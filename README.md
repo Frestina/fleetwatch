@@ -48,10 +48,16 @@ like to change, instead of going through the setup again.
 | --- | --- |
 | Uptime, load, memory | load is at or above the CPU count, memory is 90% used |
 | Disk `/` | 80% full (90% is shown as a problem) |
+| Runtime dir | `/run/user/<uid>` is 80% full (90% is shown as a problem). It has no column and only shows as an issue. It is the runtime dir of the user Fleetwatch logs in as, so a machine you reach as `root@server` shows root's. |
 | Updates | 50 or more pending, or the running kernel was upgraded and needs a reboot (pacman with `checkupdates`, `yay` for AUR, or apt) |
 | Failed units | any failed systemd unit, system or user |
 | Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the broom on their line in the popup; only crashes after that show. |
 | Agent | optional, see [settings](#optional-settings) |
+
+A check that could not run is never shown as clean. If `systemctl` or
+`coredumpctl` is there but fails, or the size of the runtime dir can't be read,
+the column shows `?` and the machine gets a `couldn't check` warning. A machine
+that doesn't have the tool, or has no runtime dir, skips that check.
 
 A machine that cannot be reached within a few seconds shows as unreachable,
 with the ssh error. When it looks off or out of reach (the connection times
@@ -62,8 +68,9 @@ key that doesn't verify), that is a problem.
 
 Every warning has a broom in the popup that dismisses it until it clears: the
 updates until you have updated, a reboot note until the next reboot, a machine
-that is off until it is reachable again, high load, memory or disk until they
-are back to normal. The next time it comes back, it shows again. Problems in
+that is off until it is reachable again, high load, memory, disk or runtime dir
+until they are back to normal, a check that couldn't run until it can. The next
+time it comes back, it shows again. Problems in
 red can't be dismissed, and a dismissed warning that becomes one shows anyway.
 
 ## Requirements

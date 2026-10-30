@@ -84,8 +84,13 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleet/watch/dismissed-crashes.json`.
   Ids older than the 7-day window are pruned on each write.
+- The collector's last line, `unchecked=`, names the checks whose tool is
+  there and failed. A tool the machine lacks is left out silently, so an empty
+  list always means nothing is wrong. `collect()` takes a report without that
+  line as cut off and reports an error, and `cells()` shows `?` and a
+  `couldn't check` warning for what it names.
 - A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `load`,
-  `mem`, `disk`, `agent`) and an `until` for its dismiss button's tooltip. The button runs
+  `mem`, `disk`, `runtime`, `unchecked`, `agent`) and an `until` for its dismiss button's tooltip. The button runs
   `--dismiss-warning <label> <key>`, which adds the key to
   `dismissed-warnings.json`; `assess()` then leaves that warning out while it
   is a warning, never once it is `bad`. After every collection,

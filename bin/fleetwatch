@@ -110,6 +110,10 @@ COLLECTOR = r"""
 export LC_ALL=C
 kv() { printf '%s=%s\n' "$1" "$2"; }
 
+# A list that comes back empty has to mean nothing is wrong, so a tool that is
+# there and fails is named here. One the machine doesn't have is skipped.
+unchecked=
+
 kv hostname "$(hostname)"
 kv uptime_s "$(cut -d. -f1 /proc/uptime)"
 kv load "$(cut -d' ' -f1 /proc/loadavg)"
@@ -117,6 +121,17 @@ kv cpus "$(nproc)"
 kv mem_pct "$(awk '/^MemTotal/{t=$2} /^MemAvailable/{a=$2} END{printf "%d", (t-a)*100/t}' /proc/meminfo)"
 kv disk_pct "$(df -P / | awk 'NR==2{sub("%","",$5); print $5}')"
 kv disk_free "$(df -Ph / | awk 'NR==2{print $4}')"
+
+runtime="/run/user/$(id -u)"
+if [ -d "$runtime" ]; then
+	pct=$(df -P "$runtime" 2>/dev/null | awk 'NR==2{sub("%","",$5); print $5}')
+	if [ -n "$pct" ]; then
+		kv runtime_pct "$pct"
+		kv runtime_free "$(df -Ph "$runtime" | awk 'NR==2{print $4}')"
+	else
+		unchecked+="runtime "
+	fi
+fi
 
 # A kernel upgrade removes the running kernel's modules dir (Arch); Debian
 # drops a flag file instead.
@@ -136,11 +151,30 @@ elif command -v apt >/dev/null; then
 	kv updates "$(apt list --upgradable 2>/dev/null | grep -c 'upgradable from')"
 fi
 
-kv failed "$(systemctl --failed --no-legend --plain 2>/dev/null | awk '{printf "%s ", $1}')"
-kv failed_user "$(systemctl --user --failed --no-legend --plain 2>/dev/null | awk '{printf "%s ", $1}')"
+failed() {
+	key=$1; shift
+	if out=$(systemctl "$@" --failed --no-legend --plain 2>/dev/null); then
+		kv "$key" "$(printf '%s\n' "$out" | awk '{printf "%s ", $1}')"
+	else
+		unchecked+="$key "
+	fi
+}
+if command -v systemctl >/dev/null && [ -d /run/systemd/system ]; then
+	failed failed
+	failed failed_user --user
+fi
 
-command -v coredumpctl >/dev/null &&
-	kv crashes "$(coredumpctl list --since=-7d --json=short --no-pager 2>/dev/null | tr -d '\n')"
+# coredumpctl exits 1 both when there are no crashes and when it can't read
+# the journal; only its message tells them apart.
+if command -v coredumpctl >/dev/null; then
+	if out=$(coredumpctl list --since=-7d --json=short --no-pager 2>/dev/null); then
+		kv crashes "$(printf '%s' "$out" | tr -d '\n')"
+	elif coredumpctl list --since=-7d --no-pager 2>&1 | grep -q 'No coredumps found'; then
+		kv crashes "[]"
+	else
+		unchecked+="crashes "
+	fi
+fi
 
 # ssh-add -l exits 0 with keys, 1 when the agent has none (locked), 2 when
 # nothing answers.
@@ -150,6 +184,9 @@ agent() {
 	case $rc in 0|1) echo "$n" ;; 124) echo timeout ;; *) echo none ;; esac
 }
 [ -n "$AGENT_SOCK" ] && kv agent "$(agent "$AGENT_SOCK")"
+
+# Stays the last line: collect() takes a report without it as cut off.
+kv unchecked "$unchecked"
 """
 
 BASE_SSH_OPTS = [
@@ -329,7 +366,8 @@ def collect(host, config):
     # to be local, so the hosts file's fields and ours win.
     for key in ("label", "target", "local", "error", "view"):
         data.pop(key, None)
-    if "hostname" not in data:
+    # Without the last line the checks that didn't run would read as clean.
+    if "hostname" not in data or "unchecked" not in data:
         err = [l for l in p.stderr.splitlines() if "Pseudo-terminal" not in l]
         return {**host, "local": local, "error": err[-1] if err else f"exit {p.returncode}"}
     return {**host, "local": local, **data}
@@ -349,7 +387,11 @@ RANK = {"bad": 2, "warn": 1}
 # Warnings that can be dismissed until they clear, and what clearing means.
 UNTIL = {"unreachable": "until it is reachable again", "reboot": "until the next reboot",
          "updates": "until you update", "load": "until it clears", "mem": "until it clears",
-         "disk": "until it clears", "agent": "until it clears"}
+         "disk": "until it clears", "runtime": "until it clears", "agent": "until it clears",
+         "unchecked": "until it can be checked"}
+# What the collector's "unchecked" list names, as the issue spells it.
+UNCHECKED = {"runtime": "runtime dir", "failed": "failed units", "failed_user": "failed user units",
+             "crashes": "crashes"}
 
 
 def headers(config):
@@ -371,6 +413,7 @@ def cells(m, config, details, dismissed=()):
         details.append((severity, m["error"], {"key": "unreachable"} if severity == "warn" else {}))
         return [(m["label"], "bold"), ("unreachable", severity)] + [("", None)] * (len(headers(config)) - 2)
 
+    unchecked = [k for k in m.get("unchecked", "").split() if k in UNCHECKED]
     out = [(m["label"] + (" *" if m["local"] else ""), "bold"),
            (duration(int(m["uptime_s"])), None)]
 
@@ -381,6 +424,12 @@ def cells(m, config, details, dismissed=()):
     disk = int(m["disk_pct"])
     out.append((f"{disk}% ({m['disk_free']} free)",
                 "bad" if disk >= 90 else "warn" if disk >= 80 else None))
+    if "runtime_pct" in m:
+        runtime = int(m["runtime_pct"])
+        if runtime >= 80:
+            details.append(("bad" if runtime >= 90 else "warn",
+                            f"runtime dir: {runtime}% full ({m['runtime_free']} free)",
+                            {"key": "runtime"} if runtime < 90 else {}))
 
     upd = m.get("updates", "?")
     aur = m.get("updates_aur")
@@ -397,7 +446,8 @@ def cells(m, config, details, dismissed=()):
                 "dim" if upd == "0" and aur in (None, "0") else None))
 
     failed = m.get("failed", "").split() + [f"{u} (user)" for u in m.get("failed_user", "").split()]
-    out.append((str(len(failed)), "bad" if failed else "dim"))
+    unknown = not failed and {"failed", "failed_user"} & set(unchecked)
+    out.append(("?", "warn") if unknown else (str(len(failed)), "bad" if failed else "dim"))
     if failed:
         details.append(("bad", f"failed units: {', '.join(failed)}"))
 
@@ -405,8 +455,10 @@ def cells(m, config, details, dismissed=()):
         crashes = json.loads(m.get("crashes") or "[]")
     except json.JSONDecodeError:
         crashes = []
+        unchecked.append("crashes")
     crashes = [c for c in crashes if isinstance(c, dict) and crash_id(c) not in dismissed]
-    out.append((str(len(crashes)), "warn" if crashes else "dim"))
+    out.append(("?", "warn") if "crashes" in unchecked and not crashes else
+               (str(len(crashes)), "warn" if crashes else "dim"))
     if crashes:
         names = {}
         for c in crashes:
@@ -415,6 +467,10 @@ def cells(m, config, details, dismissed=()):
         listed = ", ".join(f"{n} ×{k}" if k > 1 else n for n, k in names.items())
         details.append(("warn", f"crashed in the last 7 days: {listed} (coredumpctl list)",
                         {"crashes": [crash_id(c) for c in crashes]}))
+
+    if unchecked:
+        details.append(("warn", f"couldn't check: {', '.join(UNCHECKED[k] for k in unchecked)}",
+                        {"key": "unchecked"}))
 
     if "AGENT" in headers(config):
         out.append(agent_cell(m))

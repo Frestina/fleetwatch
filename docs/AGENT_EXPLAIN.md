@@ -84,6 +84,30 @@ problem).
 - Suggest cleanups (`paccache -rk1`, `journalctl --vacuum-size=…`, old
   caches); deleting anything waits for a yes.
 
+**`runtime dir: …`** `/run/user/<uid>`, the small tmpfs for the session of the
+user Fleetwatch logs in as, is filling up (80% warns, 90% is a problem). When
+it is full, things that need it fail quietly: `systemd-run --user` and app
+launches, for example.
+
+- `df -h "/run/user/$(id -u)"`, then `du -ah "/run/user/$(id -u)" 2>/dev/null |
+  sort -h | tail`. A runaway log, such as `quickshell/by-id/*/log.log`, is the
+  usual cause.
+- It is memory, so a reboot empties it. Restarting the program that wrote the
+  file may not, because its folder can stay behind.
+- Truncating a log in place (`truncate -s 0 <file>`) frees the space without
+  restarting anything. It changes a file, so it waits for a yes, and say what
+  wrote the file first: it may fill up again.
+
+**`couldn't check: …`** Fleetwatch asked and got no usable answer, so it doesn't
+know, and the `?` in the column means that. It doesn't mean something is wrong
+with what it names.
+
+- Run the check by hand for the error: `systemctl --user --failed`,
+  `systemctl --failed` or `coredumpctl list --since=-7d`.
+- `failed user units` on a server often means the login has no user manager,
+  which is harmless. `loginctl enable-linger <user>` starts one for the user.
+- Dismissing it hides it until the check works again, but the `?` stays.
+
 **`running kernel was upgraded, …`** The kernel was updated, and the old one
 is still running. Nothing is broken; new kernel modules won't load until a
 reboot. Reboot when it suits, or dismiss it until then.
