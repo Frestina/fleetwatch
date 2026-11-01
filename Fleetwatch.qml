@@ -10,8 +10,9 @@ import qs.Ui
 // and display text in --json; this widget only shows it.
 //
 // left = popup · middle = refresh now · right = full table in a terminal.
-// Clicking a machine in the popup opens an ssh session to it, and each issue
-// can be handed to the agent to explain. The popup's footer edits the hosts
+// Clicking a machine in the popup opens an ssh session to it, its arrow lists
+// its pending updates, and each issue can be handed to the agent to explain.
+// The popup's footer edits the hosts
 // file and settings, hands the setup to an agent, or uninstalls; saving either
 // file checks again.
 Panel {
@@ -25,6 +26,9 @@ Panel {
   property bool loading: false
   property string error: ""
   property var checkedAt: null
+  // The machine whose pending updates are open, one at a time so the popup
+  // stays on screen. Held here because a refresh rebuilds the rows.
+  property string expandedLabel: ""
   // Per run: a binary that fails to start only flips proc.running, with no
   // exited or stream signals, so finish() keys off running and these.
   property bool procStarted: false
@@ -152,6 +156,14 @@ Panel {
     root.bar.run([root.command].concat(args).map(Util.shellQuote).join(" "))
   }
 
+  // The rest of a long list; less keeps its top, the reboot ones, in view.
+  function openUpdates(machine) {
+    if (!root.bar) return
+    root.close()
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation "
+      + Util.shellQuote([root.command, "--updates", machine.label].map(Util.shellQuote).join(" ") + " | less -FX"))
+  }
+
   function uninstall() {
     if (!root.bar) return
     root.close()
@@ -218,6 +230,7 @@ Panel {
   onOpenedChanged: {
     // Opening shows whatever is cached at once; refresh if it is getting old.
     if (opened && (!checkedAt || Date.now() - checkedAt.getTime() > 60000)) refresh(60)
+    if (!opened) expandedLabel = ""
   }
 
   implicitWidth: button.implicitWidth
@@ -428,6 +441,9 @@ Panel {
             id: machineRow
             required property var modelData
             readonly property var issues: modelData.view ? modelData.view.issues : []
+            readonly property var updates: modelData.view ? modelData.view.updates : null
+            readonly property bool hasUpdates: !!updates && updates.list.length > 0
+            readonly property bool expanded: hasUpdates && root.expandedLabel === modelData.label
 
             width: content.width
             implicitHeight: rowColumn.implicitHeight + Style.space(12)
@@ -484,15 +500,117 @@ Panel {
                 }
               }
 
-              Text {
+              RowLayout {
                 width: parent.width
-                leftPadding: Style.space(16)
-                textFormat: Text.PlainText
-                text: root.statsLine(machineRow.modelData)
-                color: root.dim(0.6)
-                font.family: root.bar.fontFamily
-                font.pixelSize: Style.font.caption
-                elide: Text.ElideRight
+                spacing: Style.space(4)
+
+                Text {
+                  Layout.fillWidth: true
+                  leftPadding: Style.space(16)
+                  textFormat: Text.PlainText
+                  text: root.statsLine(machineRow.modelData)
+                  color: root.dim(0.6)
+                  font.family: root.bar.fontFamily
+                  font.pixelSize: Style.font.caption
+                  elide: Text.ElideRight
+                }
+
+                PanelActionButton {
+                  visible: machineRow.hasUpdates
+                  iconText: machineRow.expanded ? "󰅃" : "󰅀"
+                  tooltipText: machineRow.expanded ? "Hide the pending updates" : "Show the pending updates"
+                  size: Style.space(16)
+                  fontSize: Style.font.caption
+                  foreground: root.barForeground
+                  fontFamily: root.bar.fontFamily
+                  onClicked: root.expandedLabel = machineRow.expanded ? "" : machineRow.modelData.label
+                }
+              }
+
+              // ---------- Pending updates, the arrow above opens them ----------
+              Column {
+                id: updateList
+                visible: machineRow.expanded
+                width: parent.width
+                spacing: Style.space(2)
+
+                Repeater {
+                  model: machineRow.expanded ? machineRow.updates.list : []
+
+                  delegate: RowLayout {
+                    id: updateRow
+                    required property var modelData
+                    width: updateList.width
+                    spacing: Style.space(8)
+
+                    // Fills only up to its text; the spacer takes what is left, so
+                    // the tag stays beside the name and the versions on the right.
+                    Text {
+                      Layout.fillWidth: true
+                      Layout.maximumWidth: implicitWidth
+                      leftPadding: Style.space(16)
+                      textFormat: Text.PlainText
+                      text: updateRow.modelData.name
+                      color: root.barForeground
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideRight
+                    }
+
+                    Text {
+                      visible: updateRow.modelData.tag !== ""
+                      textFormat: Text.PlainText
+                      text: updateRow.modelData.tag
+                      color: updateRow.modelData.tag === "reboot" ? root.warnColor : root.dim(0.6)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+
+                    Item { Layout.fillWidth: true }
+
+                    Text {
+                      Layout.maximumWidth: updateList.width * 0.6
+                      textFormat: Text.PlainText
+                      text: updateRow.modelData.old + " → " + updateRow.modelData.new
+                      color: root.dim(0.6)
+                      font.family: root.bar.fontFamily
+                      font.pixelSize: Style.font.caption
+                      elide: Text.ElideMiddle
+                    }
+                  }
+                }
+
+                RowLayout {
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  Text {
+                    Layout.fillWidth: true
+                    leftPadding: Style.space(16)
+                    textFormat: Text.PlainText
+                    text: machineRow.updates && machineRow.updates.more > 0 ? "+" + machineRow.updates.more + " more" : ""
+                    color: root.dim(0.6)
+                    font.family: root.bar.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+
+                  PanelActionButton {
+                    visible: !!machineRow.updates && machineRow.updates.more > 0
+                    iconText: "󰆍"
+                    tooltipText: "All of them in a terminal"
+                    foreground: root.barForeground
+                    fontFamily: root.bar.fontFamily
+                    onClicked: root.openUpdates(machineRow.modelData)
+                  }
+
+                  PanelActionButton {
+                    iconText: "󰚩"
+                    tooltipText: "Ask your agent whether to update now"
+                    foreground: root.barForeground
+                    fontFamily: root.bar.fontFamily
+                    onClicked: root.runCommand(["--ask-agent", machineRow.modelData.label, machineRow.updates.issue])
+                  }
+                }
               }
 
               Repeater {

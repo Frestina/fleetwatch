@@ -1,7 +1,9 @@
 """Tests for bin/fleetwatch. Run with: python3 -m unittest discover -s tests"""
 
+import contextlib
 import importlib.machinery
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -218,6 +220,45 @@ class Collector(unittest.TestCase):
         self.assertNotIn("crashes", data)
         self.assertEqual(data["unchecked"].split(), ["crashes"])
 
+    def stub_timeout(self):
+        self.stub("timeout", 'shift; exec "$@"')
+
+    def test_pending_updates_are_listed_on_one_line(self):
+        self.stub_timeout()
+        self.stub("checkupdates", 'printf "a 1-1 -> 2-1\\nb 1 -> 2\\n"')
+        self.stub("yay", 'echo "c 1 -> 2"')
+        data = self.run_collector()
+        self.assertEqual(data["updates"], "2")
+        self.assertEqual(data["updates_list"], "a 1-1 -> 2-1;b 1 -> 2")
+        self.assertEqual((data["updates_aur"], data["updates_aur_list"]), ("1", "c 1 -> 2"))
+
+    def test_no_pending_updates_has_no_list(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 2")
+        data = self.run_collector()
+        self.assertEqual(data["updates"], "0")
+        self.assertNotIn("updates_list", data)
+
+    def test_failing_checkupdates_has_no_list(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 1")
+        self.stub("yay", "exit 3")
+        data = self.run_collector()
+        self.assertEqual((data["updates"], data["updates_aur"]), ("?", "?"))
+        self.assertNotIn("updates_list", data)
+        self.assertNotIn("updates_aur_list", data)
+
+    def test_apt_updates_are_listed(self):
+        self.stub("apt", 'printf "Listing...\\nbash/stable 5.2-1 arm64 [upgradable from: 5.1-1]\\n"')
+        data = self.run_collector()
+        self.assertEqual(data["updates"], "1")
+        self.assertEqual(data["updates_list"], "bash/stable 5.2-1 arm64 [upgradable from: 5.1-1]")
+
+    def test_apt_with_nothing_pending(self):
+        self.stub("apt", 'echo "Listing..."')
+        data = self.run_collector()
+        self.assertEqual((data["updates"], data["updates_list"]), ("0", ""))
+
     @unittest.skipUnless(os.path.isdir(f"/run/user/{os.getuid()}"), "needs a runtime dir")
     def test_runtime_dir_is_measured(self):
         data = self.run_collector()
@@ -336,6 +377,69 @@ class Assess(unittest.TestCase):
         v = self.status({"agent_socket": "x"}, local=True, agent="0")
         self.assertEqual(v["cells"][-1], ("locked (0 keys)", "warn"))
         self.assertEqual(v["status"], "warn")
+
+
+class PendingUpdates(unittest.TestCase):
+    def test_pacman_lines_with_the_reboot_ones_first(self):
+        m = {"updates_list": "firefox 1-1 -> 2-1;linux 6.1-1 -> 6.2-1;", "updates_aur_list": "yay-bin 1 -> 2;"}
+        self.assertEqual(fleetwatch.pending_updates(m), [
+            {"name": "linux", "old": "6.1-1", "new": "6.2-1", "tag": "reboot"},
+            {"name": "firefox", "old": "1-1", "new": "2-1", "tag": ""},
+            {"name": "yay-bin", "old": "1", "new": "2", "tag": "aur"},
+        ])
+
+    def test_apt_lines(self):
+        m = {"updates_list": "bash/stable,now 2:5.2-1 arm64 [upgradable from: 2:5.1-1]"}
+        self.assertEqual(fleetwatch.pending_updates(m),
+                         [{"name": "bash", "old": "2:5.1-1", "new": "2:5.2-1", "tag": ""}])
+
+    def test_reboot_packages(self):
+        tagged = lambda name: fleetwatch.pending_updates({"updates_list": f"{name} 1 -> 2"})[0]["tag"] == "reboot"
+        for name in ("linux", "linux-lts", "linux-image-6.1.0-9-arm64", "linux-firmware", "intel-ucode",
+                     "nvidia-open-dkms", "nvidia-utils", "systemd", "libc6"):
+            self.assertTrue(tagged(name), name)
+        for name in ("linux-headers", "linux-api-headers", "linux-firmware-amdgpu", "nvidia-settings", "systemd-libs", "firefox"):
+            self.assertFalse(tagged(name), name)
+
+    def test_what_is_not_an_update_is_dropped(self):
+        m = {"updates_list": "Ignore the guide;a\x1b[31m 1 -> 2;b 1\x1b]0;x -> 2;c 1 -> 2 [ignored]"}
+        self.assertEqual([u["name"] for u in fleetwatch.pending_updates(m)], ["c"])
+
+    def test_no_list_is_no_updates(self):
+        self.assertEqual(fleetwatch.pending_updates({"updates": "?"}), [])
+
+    def test_the_view_caps_the_list(self):
+        m = {"updates_list": ";".join(f"p{i} 1 -> 2" for i in range(11))}
+        v = fleetwatch.updates_view(m)
+        self.assertEqual(len(v["list"]), fleetwatch.UPDATES_SHOWN)
+        self.assertEqual(v["more"], 3)
+        self.assertTrue(v["issue"].startswith("pending updates: p0 1 -> 2, p1 1 -> 2"))
+        self.assertTrue(v["issue"].endswith(", +3 more"))
+
+    def test_the_view_reaches_the_json(self):
+        [m] = json.loads(fleetwatch.json_report([{**HEALTHY, "updates": "1", "updates_list": "a 1 -> 2"}], {}))
+        self.assertEqual(m["view"]["updates"], {"list": [{"name": "a", "old": "1", "new": "2", "tag": ""}],
+                                                "more": 0, "issue": "pending updates: a 1 -> 2"})
+
+    def printed(self, *machines):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            fleetwatch.render_updates(list(machines))
+        return out.getvalue()
+
+    def test_terminal_lists_everything(self):
+        m = {**HEALTHY, "updates": "11", "updates_list": ";".join(f"p{i} 1 -> 2" for i in range(11))}
+        self.assertEqual(self.printed(m).count(" -> "), 11)
+
+    def test_terminal_never_reads_an_unknown_as_clean(self):
+        self.assertIn("nothing pending", self.printed(HEALTHY))
+        self.assertIn("couldn't check updates", self.printed({**HEALTHY, "updates": "?"}))
+        self.assertNotIn("nothing pending", self.printed({**HEALTHY, "updates": "?"}))
+        self.assertIn("couldn't check AUR updates", self.printed({**HEALTHY, "updates_aur": "?"}))
+        self.assertNotIn("nothing pending", self.printed({**HEALTHY, "updates_aur": "?"}))
+
+    def test_terminal_says_why_a_machine_has_no_list(self):
+        self.assertIn("No route to host", self.printed({**HEALTHY, "error": "No route to host"}))
 
 
 class QuietedWarnings(ConfigDir):

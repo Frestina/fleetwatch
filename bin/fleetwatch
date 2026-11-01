@@ -33,6 +33,7 @@ with this machine in it, the config with every setting commented out. Existing
 files are never replaced.
 
 Usage: fleetwatch [--json [--max-age SECONDS | --since EPOCH]] [LABEL...]
+       fleetwatch --updates [LABEL...]
        fleetwatch --edit hosts|config
        fleetwatch --ask-agent [LABEL ISSUE]
        fleetwatch --dismiss-crashes LABEL ID...
@@ -47,6 +48,9 @@ the rules for what counts as a problem live only here.
 The bar runs one widget per monitor; a lock makes them share one collection.
 --since reuses it only if that collection started at or after EPOCH (Unix
 seconds), so a refresh-now sent to every monitor's widget collects once.
+
+--updates lists every pending update of each machine instead of the table,
+those that usually want a reboot first.
 
 --edit opens one of the two files in Omarchy's default editor.
 
@@ -140,15 +144,29 @@ reboot=0
 [ -e /var/run/reboot-required ] && reboot=1
 kv reboot "$reboot"
 
+# A value has to stay on one line, so a list's lines are joined with ;.
+joined() { printf '%s' "$1" | tr '\n' ';'; }
+
 if command -v checkupdates >/dev/null; then
 	out=$(timeout 30 checkupdates 2>/dev/null); rc=$?
-	case $rc in 0) kv updates "$(printf '%s\n' "$out" | wc -l)" ;; 2) kv updates 0 ;; *) kv updates "?" ;; esac
+	case $rc in
+		0) kv updates "$(printf '%s\n' "$out" | wc -l)"; kv updates_list "$(joined "$out")" ;;
+		2) kv updates 0 ;;
+		*) kv updates "?" ;;
+	esac
 	if command -v yay >/dev/null; then
 		out=$(timeout 20 yay -Qua 2>/dev/null); rc=$?
-		[ $rc -le 1 ] && kv updates_aur "$(printf '%s' "$out" | grep -c .)" || kv updates_aur "?"
+		if [ $rc -le 1 ]; then
+			kv updates_aur "$(printf '%s' "$out" | grep -c .)"
+			kv updates_aur_list "$(joined "$out")"
+		else
+			kv updates_aur "?"
+		fi
 	fi
 elif command -v apt >/dev/null; then
-	kv updates "$(apt list --upgradable 2>/dev/null | grep -c 'upgradable from')"
+	out=$(apt list --upgradable 2>/dev/null | grep 'upgradable from')
+	kv updates "$(printf '%s' "$out" | grep -c .)"
+	kv updates_list "$(joined "$out")"
 fi
 
 failed() {
@@ -392,6 +410,20 @@ UNTIL = {"unreachable": "until it is reachable again", "reboot": "until the next
 # What the collector's "unchecked" list names, as the issue spells it.
 UNCHECKED = {"runtime": "runtime dir", "failed": "failed units", "failed_user": "failed user units",
              "crashes": "crashes"}
+# An update as checkupdates and yay print it, and as apt lists it. A line that
+# is neither is dropped, so what a machine sends can't carry anything else to
+# the terminal or the agent.
+VERSION = r"[\w.:+~-]+"
+PACMAN_UPDATE = re.compile(rf"(?P<name>[\w@.+-]+) (?P<old>{VERSION}) -> (?P<new>{VERSION})", re.ASCII)
+APT_UPDATE = re.compile(rf"(?P<name>[\w@.+:-]+)/\S+ (?P<new>{VERSION}) \S+ \[upgradable from: (?P<old>{VERSION})\]",
+                        re.ASCII)
+# What usually wants a reboot to take effect: kernels, firmware, microcode, the
+# graphics driver and the libraries everything runs on.
+REBOOT_PACKAGES = re.compile(r"linux(-lts|-zen|-hardened|-rt|-rpi\S*)?|linux-image-\S+|raspberrypi-kernel|"
+                             r"linux-firmware|(amd|intel)-ucode|(amd64|intel)-microcode|"
+                             r"nvidia(-open)?(-dkms)?|nvidia-(utils|driver)|systemd|glibc|libc6")
+# How many the popup lists for one machine; --updates has the rest.
+UPDATES_SHOWN = 8
 
 
 def headers(config):
@@ -477,6 +509,29 @@ def cells(m, config, details, dismissed=()):
     return out
 
 
+def pending_updates(m):
+    """Every pending update as {name, old, new, tag}, the ones with the reboot
+    tag first. The tag is "reboot", "aur" or empty."""
+    found = []
+    for key, tag in (("updates_list", ""), ("updates_aur_list", "aur")):
+        for line in m.get(key, "").split(";"):
+            match = PACMAN_UPDATE.match(line) or APT_UPDATE.match(line)
+            if match:
+                found.append({**match.groupdict(),
+                              "tag": "reboot" if REBOOT_PACKAGES.fullmatch(match["name"]) else tag})
+    return sorted(found, key=lambda u: u["tag"] != "reboot")
+
+
+def updates_view(m):
+    """The popup's list: the first few updates, how many more there are, and
+    the same as text to hand the agent."""
+    updates = pending_updates(m)
+    shown, more = updates[:UPDATES_SHOWN], max(0, len(updates) - UPDATES_SHOWN)
+    listed = ", ".join(f"{u['name']} {u['old']} -> {u['new']}" for u in shown)
+    return {"list": shown, "more": more,
+            "issue": f"pending updates: {listed}" + (f", +{more} more" if more else "")}
+
+
 def agent_cell(m):
     # This machine: is its agent up and unlocked? Others: is there a live
     # agent forwarded in by an ssh session right now?
@@ -516,7 +571,7 @@ def assess(m, config, dismissed=(), quieted=()):
     worst = max((RANK.get(i["severity"], 0) for i in issues), default=0)
     status = {2: "bad", 1: "warn", 0: "ok"}[worst]
     return {"cells": row, "details": details, "issues": issues, "status": status,
-            "warnings": warnings}
+            "warnings": warnings, "updates": updates_view(m)}
 
 
 # --- rendering ----------------------------------------------------------------
@@ -557,10 +612,29 @@ def render(machines, config):
     print(paint("\n" + note, "dim"))
 
 
+def render_updates(machines):
+    for n, m in enumerate(machines):
+        print(("\n" if n else "") + paint(m["label"], "bold"))
+        if "error" in m:
+            print("  " + paint(m["error"], "bad"))
+            continue
+        updates = pending_updates(m)
+        width = max((len(u["name"]) for u in updates), default=0)
+        for u in updates:
+            tag = paint("  " + u["tag"], "warn" if u["tag"] == "reboot" else "dim") if u["tag"] else ""
+            print(f"  {u['name'].ljust(width)}  {u['old']} -> {u['new']}{tag}")
+        unknown = [what for what, count in (("updates", m.get("updates", "?")), ("AUR updates", m.get("updates_aur", "0")))
+                   if not count.isdigit()]
+        for what in unknown:
+            print("  " + paint(f"couldn't check {what}", "warn"))
+        if not updates and not unknown:
+            print("  " + paint("nothing pending", "dim"))
+
+
 def json_report(machines, config):
     cols = headers(config)
     for m, v in zip(machines, assess_all(machines, config)):
-        m["view"] = {"status": v["status"], "issues": v["issues"],
+        m["view"] = {"status": v["status"], "issues": v["issues"], "updates": v["updates"],
                      "columns": {h: {"text": t, "style": st} for h, (t, st) in zip(cols, v["cells"])}}
     return json.dumps(machines, indent=2)
 
@@ -868,6 +942,8 @@ def main(argv):
     machines = collect_all(hosts, config)
     if as_json:
         print(json_report(machines, config))
+    elif "--updates" in argv:
+        render_updates(machines)
     else:
         render(machines, config)
     return 0

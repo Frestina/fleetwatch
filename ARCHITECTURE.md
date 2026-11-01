@@ -24,6 +24,13 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   when it matches `OFFLINE` (timeout, no route, name not resolving: off or out
   of reach, often on purpose) and `bad` otherwise. The terminal table and
   `--json` share it.
+- The collector sends the pending updates as well as their count, `;`-joined
+  on one line (`updates_list`, `updates_aur_list`). `pending_updates()` keeps
+  only lines that parse as an update from pacman, yay or apt, so what a machine
+  sends can't carry control characters to the terminal or the agent. It puts
+  `REBOOT_PACKAGES` first and tags them, and `updates_view()` gives the popup
+  the first `UPDATES_SHOWN`. `--updates [LABEL...]` prints all of them in place
+  of the table.
 - `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleet/watch/last.json`
   under an exclusive `flock`, so the widget's copies on several monitors share
   one collection. The cache's mtime is when its collection started.
@@ -80,6 +87,12 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   monitor shares one check. A watch only takes on an existing file, so the
   watchers get their paths after the first successful check, by which time
   the script has created all four.
+- A machine's stats line has an arrow when it has updates to list. It sets
+  `expandedLabel`, held on the root so a refresh keeps the list open and one
+  machine shows at a time; closing the popup clears it. The arrow, the terminal
+  and agent buttons under the list sit above the row's ssh `MouseArea`, so they
+  don't open ssh. The terminal button runs `--updates <label>` through `less`,
+  the agent button `--ask-agent <label>` with `view.updates.issue`.
 - A crash issue carries its crash ids
   (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleet/watch/dismissed-crashes.json`.

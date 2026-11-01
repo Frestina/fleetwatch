@@ -30,6 +30,12 @@ editor, can hand the setup to your coding agent, and uninstalls the plugin.
 
 ## Ask your agent
 
+When a machine has updates pending, the arrow at the end of its stats line
+lists them under it with their versions, those that usually want a reboot
+first, and the agent button there asks whether to update now or wait. A long
+list shows the first 8, and the terminal button there, or `fleetwatch --updates
+<label>`, shows the rest.
+
 Every issue in the popup has an agent button. It starts your default coding
 agent (`omarchy agent`) with the machine, the issue and
 [a guide](docs/AGENT_EXPLAIN.md), so you can ask what a failed unit is or

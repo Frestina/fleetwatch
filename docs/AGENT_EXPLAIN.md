@@ -117,6 +117,20 @@ reboot. Reboot when it suits, or dismiss it until then.
 `sudo apt upgrade`). Don't update it yourself. Dismissing it hides it until
 the machine has been updated.
 
+**`pending updates: …`** The user opened a machine's list of pending updates
+and wants to know whether to update now or wait. The issue names only the
+first few; `fleetwatch --updates <label>` lists them all, those that usually
+want a reboot first (step 1 is this command here, not the table).
+
+- Say what the updates are in plain words. With many, group them instead of
+  going through each: kernel and drivers, desktop, libraries, the user's own
+  tools.
+- Look for what makes one risky or urgent: packages tagged `reboot`, a jump in
+  a major version, a security fix, and on Arch a recent post on
+  <https://archlinux.org/news/> that asks for manual steps.
+- End with a recommendation, now or later, and why. Say if it will want a
+  reboot, and how to update (see `updates: …`). Don't update it yourself.
+
 **`load: …` or `mem: …`** The load average is at or above the CPU count, or
 memory is 90% used. `top -bn1 | head -20` and `ps aux --sort=-%mem | head`
 show what is behind it. It may be a passing peak: check again after a while.
