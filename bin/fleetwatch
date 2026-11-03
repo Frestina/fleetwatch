@@ -138,10 +138,16 @@ if [ -d "$runtime" ]; then
 fi
 
 # A kernel upgrade removes the running kernel's modules dir (Arch); Debian
-# drops a flag file instead.
+# drops a flag file instead. Omarchy's kernel-modules-hook puts the dir back
+# after the upgrade, but no package owns it then. A kernel built by hand was
+# never a package's, and has no pkgbase file.
+kernel=$(uname -r)
 reboot=0
-[ -d "/usr/lib/modules/$(uname -r)" ] || [ -d "/lib/modules/$(uname -r)" ] || reboot=1
+[ -d "/usr/lib/modules/$kernel" ] || [ -d "/lib/modules/$kernel" ] || reboot=1
 [ -e /var/run/reboot-required ] && reboot=1
+if [ -e "/usr/lib/modules/$kernel/pkgbase" ] && command -v pacman >/dev/null; then
+	pacman -Qqo "/usr/lib/modules/$kernel" 2>&1 | grep -q '^error: No package owns' && reboot=1
+fi
 kv reboot "$reboot"
 
 # A value has to stay on one line, so a list's lines are joined with ;.
@@ -163,6 +169,9 @@ if command -v checkupdates >/dev/null; then
 			kv updates_aur "?"
 		fi
 	fi
+	# The installed kernel packages, whatever their flavour, so their updates
+	# are tagged as wanting a reboot.
+	kv kernels "$(joined "$(pacman -Qqo /usr/lib/modules/*/vmlinuz 2>/dev/null)")"
 elif command -v apt >/dev/null; then
 	out=$(apt list --upgradable 2>/dev/null | grep 'upgradable from')
 	kv updates "$(printf '%s' "$out" | grep -c .)"
@@ -418,9 +427,10 @@ PACMAN_UPDATE = re.compile(rf"(?P<name>[\w@.+-]+) (?P<old>{VERSION}) -> (?P<new>
 APT_UPDATE = re.compile(rf"(?P<name>[\w@.+:-]+)/\S+ (?P<new>{VERSION}) \S+ \[upgradable from: (?P<old>{VERSION})\]",
                         re.ASCII)
 # What usually wants a reboot to take effect: kernels, firmware, microcode, the
-# graphics driver and the libraries everything runs on.
+# graphics driver and the libraries everything runs on. A pacman machine also
+# reports its own kernel packages, as "kernels", for the flavours not named here.
 REBOOT_PACKAGES = re.compile(r"linux(-lts|-zen|-hardened|-rt|-rpi\S*)?|linux-image-\S+|raspberrypi-kernel|"
-                             r"linux-firmware|(amd|intel)-ucode|(amd64|intel)-microcode|"
+                             r"linux-firmware(-\S+)?|(amd|intel)-ucode|(amd64|intel)-microcode|"
                              r"nvidia(-open)?(-dkms)?|nvidia-(utils|driver)|systemd|glibc|libc6")
 # How many the popup lists for one machine; --updates has the rest.
 UPDATES_SHOWN = 8
@@ -513,12 +523,13 @@ def pending_updates(m):
     """Every pending update as {name, old, new, tag}, the ones with the reboot
     tag first. The tag is "reboot", "aur" or empty."""
     found = []
+    kernels = set(m.get("kernels", "").split(";")) - {""}
     for key, tag in (("updates_list", ""), ("updates_aur_list", "aur")):
         for line in m.get(key, "").split(";"):
             match = PACMAN_UPDATE.match(line) or APT_UPDATE.match(line)
             if match:
-                found.append({**match.groupdict(),
-                              "tag": "reboot" if REBOOT_PACKAGES.fullmatch(match["name"]) else tag})
+                reboot = REBOOT_PACKAGES.fullmatch(match["name"]) or match["name"] in kernels
+                found.append({**match.groupdict(), "tag": "reboot" if reboot else tag})
     return sorted(found, key=lambda u: u["tag"] != "reboot")
 
 

@@ -28,9 +28,17 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   on one line (`updates_list`, `updates_aur_list`). `pending_updates()` keeps
   only lines that parse as an update from pacman, yay or apt, so what a machine
   sends can't carry control characters to the terminal or the agent. It puts
-  `REBOOT_PACKAGES` first and tags them, and `updates_view()` gives the popup
-  the first `UPDATES_SHOWN`. `--updates [LABEL...]` prints all of them in place
-  of the table.
+  `REBOOT_PACKAGES` first and tags them, along with the packages a pacman
+  machine reports as its kernels (`kernels`, the owners of
+  `/usr/lib/modules/*/vmlinuz`), so any flavour is tagged. `updates_view()`
+  gives the popup the first `UPDATES_SHOWN`. `--updates [LABEL...]` prints all
+  of them in place of the table.
+- `reboot=1` when the running kernel's modules dir is gone (Arch), Debian's
+  `/var/run/reboot-required` exists, or pacman says no package owns a modules
+  dir that has a `pkgbase` file. That last one is Omarchy's
+  `kernel-modules-hook`, which puts the running kernel's modules back after
+  an upgrade. Only pacman's own "No package owns" counts, so a pacman that
+  fails is no reboot.
 - `--json --max-age N` / `--since EPOCH` serve `~/.cache/fleet/watch/last.json`
   under an exclusive `flock`, so the widget's copies on several monitors share
   one collection. The cache's mtime is when its collection started.

@@ -109,8 +109,10 @@ with what it names.
 - Dismissing it hides it until the check works again, but the `?` stays.
 
 **`running kernel was upgraded, …`** The kernel was updated, and the old one
-is still running. Nothing is broken; new kernel modules won't load until a
-reboot. Reboot when it suits, or dismiss it until then.
+is still running. Nothing is broken, but the new kernel's fixes only take
+effect after a reboot, and on Arch without `kernel-modules-hook` (Omarchy has
+it) a module that isn't loaded yet can't load until then. Reboot when it
+suits, or dismiss it until then.
 
 **`updates: …`** 50 or more pending updates. Say what kind of machine it is
 (Omarchy: `omarchy update`; other Arch: `sudo pacman -Syu`; Debian or Ubuntu:

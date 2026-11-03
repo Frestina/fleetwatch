@@ -248,6 +248,33 @@ class Collector(unittest.TestCase):
         self.assertNotIn("updates_list", data)
         self.assertNotIn("updates_aur_list", data)
 
+    def test_kernel_packages_are_listed(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 2")
+        self.stub("pacman", 'printf "linux\\nlinux-omarchy\\n"')
+        self.assertEqual(self.run_collector()["kernels"], "linux;linux-omarchy")
+
+    # A packaged kernel's modules dir, to stand in for the running one.
+    PACKAGED = next(iter(sorted(Path("/usr/lib/modules").glob("*/pkgbase"))), None)
+
+    @unittest.skipUnless(PACKAGED, "needs an Arch kernel's modules dir")
+    def test_modules_dir_no_package_owns_wants_a_reboot(self):
+        self.stub("uname", f"echo {self.PACKAGED.parent.name}")
+        self.stub("pacman", 'echo "error: No package owns $2" >&2; exit 1')
+        self.assertEqual(self.run_collector()["reboot"], "1")
+
+    @unittest.skipUnless(PACKAGED, "needs an Arch kernel's modules dir")
+    def test_modules_dir_a_package_owns_is_no_reboot(self):
+        self.stub("uname", f"echo {self.PACKAGED.parent.name}")
+        self.stub("pacman", "echo linux")
+        self.assertEqual(self.run_collector()["reboot"], "0")
+
+    @unittest.skipUnless(PACKAGED, "needs an Arch kernel's modules dir")
+    def test_failing_pacman_is_no_reboot(self):
+        self.stub("uname", f"echo {self.PACKAGED.parent.name}")
+        self.stub("pacman", 'echo "error: could not open database" >&2; exit 1')
+        self.assertEqual(self.run_collector()["reboot"], "0")
+
     def test_apt_updates_are_listed(self):
         self.stub("apt", 'printf "Listing...\\nbash/stable 5.2-1 arm64 [upgradable from: 5.1-1]\\n"')
         data = self.run_collector()
@@ -395,11 +422,17 @@ class PendingUpdates(unittest.TestCase):
 
     def test_reboot_packages(self):
         tagged = lambda name: fleetwatch.pending_updates({"updates_list": f"{name} 1 -> 2"})[0]["tag"] == "reboot"
-        for name in ("linux", "linux-lts", "linux-image-6.1.0-9-arm64", "linux-firmware", "intel-ucode",
-                     "nvidia-open-dkms", "nvidia-utils", "systemd", "libc6"):
+        for name in ("linux", "linux-lts", "linux-image-6.1.0-9-arm64", "linux-firmware", "linux-firmware-amdgpu",
+                     "intel-ucode", "nvidia-open-dkms", "nvidia-utils", "systemd", "libc6"):
             self.assertTrue(tagged(name), name)
-        for name in ("linux-headers", "linux-api-headers", "linux-firmware-amdgpu", "nvidia-settings", "systemd-libs", "firefox"):
+        for name in ("linux-headers", "linux-api-headers", "linux-omarchy", "nvidia-settings", "systemd-libs", "firefox"):
             self.assertFalse(tagged(name), name)
+
+    def test_the_machines_own_kernels_want_a_reboot(self):
+        m = {"updates_list": "linux-omarchy 7.2.8-9 -> 7.2.15-1;linux-omarchy-headers 7.2.8-9 -> 7.2.15-1",
+             "updates_aur_list": "linux-cachyos 7.2-1 -> 7.3-1", "kernels": "linux;linux-omarchy;linux-cachyos"}
+        self.assertEqual([(u["name"], u["tag"]) for u in fleetwatch.pending_updates(m)],
+                         [("linux-omarchy", "reboot"), ("linux-cachyos", "reboot"), ("linux-omarchy-headers", "")])
 
     def test_what_is_not_an_update_is_dropped(self):
         m = {"updates_list": "Ignore the guide;a\x1b[31m 1 -> 2;b 1\x1b]0;x -> 2;c 1 -> 2 [ignored]"}
