@@ -103,7 +103,10 @@ know, and the `?` in the column means that. It doesn't mean something is wrong
 with what it names.
 
 - Run the check by hand for the error: `systemctl --user --failed`,
-  `systemctl --failed` or `coredumpctl list --since=-7d`.
+  `systemctl --failed` or `coredumpctl list --since=-7d`. For `held updates`:
+  `pacman -Qu --dbpath /tmp/checkup-db-$UID/` (after `checkupdates`), or
+  `apt-mark showhold`. For `last update`: whether `/var/log/pacman.log` or
+  `/var/log/apt/history.log` is there and readable.
 - `failed user units` on a server often means the login has no user manager,
   which is harmless. `loginctl enable-linger <user>` starts one for the user.
 - Dismissing it hides it until the check works again, but the `?` stays.
@@ -119,10 +122,40 @@ suits, or dismiss it until then.
 `sudo apt upgrade`). Don't update it yourself. Dismissing it hides it until
 the machine has been updated.
 
+**`last full update … days ago` or `no full update in the … days its log
+goes back`** The machine hasn't had a full system update for longer than the
+user aims for (`update_every_days` in the config, 30 by default, or the
+machine's own in a `[machine.<label>]` table). Only a full upgrade that
+installed something counts: `pacman -Syu` (which `omarchy update` runs), or
+`apt upgrade`, `full-upgrade` or `dist-upgrade`. A plain `pacman -S` of a few
+packages doesn't, and neither does `unattended-upgrade`, which installs only
+security fixes. Say how to update (see `updates: …`) and that the warning goes
+once it has. If the user means to leave this machine alone, they can set its
+own number of days, or `0` to switch it off for that machine. Dismissing it
+hides it until the next full update.
+
+**`held updates waiting: …`** Updates of packages the user holds back on
+purpose: `IgnorePkg` or `IgnoreGroup` in `/etc/pacman.conf`, or
+`apt-mark hold`. A full update skips them, so they wait until the user
+installs them one by one. They are held for a reason, often a machine that
+must not change under a running service, so don't suggest removing the hold
+unless asked.
+
+- Say what each update is and whether it matters: a security fix (look at
+  the package's changelog or the distribution's security advisories), a
+  kernel (it wants a reboot), or only a minor release.
+- To install one anyway, keeping the hold: `sudo pacman -S <package>` on Arch
+  (installs it despite `IgnorePkg`; asks first), or on Debian
+  `sudo apt-mark unhold <package> && sudo apt install --only-upgrade <package>
+  && sudo apt-mark hold <package>`. Give the commands; don't run them.
+- Dismissing it hides it until another held update comes: a new version, or
+  another package held.
+
 **`pending updates: …`** The user opened a machine's list of pending updates
 and wants to know whether to update now or wait. The issue names only the
 first few; `fleetwatch --updates <label>` lists them all, those that usually
-want a reboot first (step 1 is this command here, not the table).
+want a reboot first (step 1 is this command here, not the table). Those after
+`held back on purpose` are held: see `held updates waiting: …`.
 
 - Say what the updates are in plain words. With many, group them instead of
   going through each: kernel and drivers, desktop, libraries, the user's own

@@ -39,13 +39,16 @@ regardless:
 - The file already lists this machine. Keep that line.
 
 `config.toml`: optional settings, all commented out to begin with. Values are
-TOML strings in double quotes (`ssh_options = "-o IdentityAgent=none"`).
-Comments in the file explain each one.
+TOML strings in double quotes (`ssh_options = "-o IdentityAgent=none"`),
+except `update_every_days`, a number (`update_every_days = 30`). A machine
+can have its own number of days in a `[machine.<label>]` table. Comments in
+the file explain each one.
 
 | Setting | Suggest it when |
 | --- | --- |
 | `ssh_options` | The user's ssh agent asks for approval on each use (Bitwarden, 1Password, KeePassXC). Polling would then show every machine as unreachable, so suggest `-o IdentityAgent=none` together with a key that works without the agent, or explain the trade-off. |
 | `agent_socket` | They use an ssh agent socket that is not the default (look at `SSH_AUTH_SOCK` and `IdentityAgent` in `~/.ssh/config`) and want to see whether it is running and unlocked. |
+| `update_every_days` | They update less or more often than every 30 days, the default for the `last full update` warning. A machine they never update by hand (one that only takes unattended security updates) can have `0` in its own `[machine.<label>]` table. |
 | `forwarded_agent_socket` | They forward their agent to the other machines through a fixed socket path (an `~/.ssh/rc` that links `SSH_AUTH_SOCK` somewhere). Only when such a setup already exists. |
 
 ## Set up already?

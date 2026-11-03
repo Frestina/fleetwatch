@@ -38,6 +38,11 @@ HEALTHY = {
 }
 
 
+def stamp(days):
+    """When the last full upgrade was, `days` days ago, as the collector writes it."""
+    return time.strftime(fleetwatch.TIMESTAMP, time.localtime(time.time() - days * 86400 - 3600))
+
+
 class ConfigDir(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -90,6 +95,20 @@ class HostsAndConfig(ConfigDir):
 
     def test_config_values_are_toml_strings(self):
         for text in ("ssh_options = -o IdentityAgent=none\n", "agent_socket = 3\n"):
+            self.config.write_text(text)
+            with self.assertRaises(ValueError, msg=text):
+                fleetwatch.read_config()
+
+    def test_days_are_numbers_and_can_be_set_per_machine(self):
+        self.config.write_text('update_every_days = 14\n\n[machine.server]\nupdate_every_days = 0\n')
+        config = fleetwatch.read_config()
+        self.assertEqual([fleetwatch.days_setting(config, "update_every_days", label) for label in ("laptop", "server")],
+                         [14, 0])
+        self.assertEqual(fleetwatch.days_setting({}, "update_every_days", "laptop"), 30)
+
+    def test_days_that_are_not_a_number_are_an_error(self):
+        for text in ('update_every_days = "30"\n', "update_every_days = -1\n", "update_every_days = true\n",
+                     "[machine.server]\nssh_options = 3\n", "machine = 3\n", "[machine]\nserver = 3\n"):
             self.config.write_text(text)
             with self.assertRaises(ValueError, msg=text):
                 fleetwatch.read_config()
@@ -171,7 +190,7 @@ class Collector(unittest.TestCase):
     """The real collector, with the tools it asks about stubbed. PATH holds only
     the tools listed here, so one left out is a tool the machine doesn't have."""
 
-    TOOLS = "awk cut df grep hostname id nproc tr uname wc".split()
+    TOOLS = "awk cut date df grep gzip hostname id nproc sed tr uname wc zcat".split()
 
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
@@ -186,9 +205,9 @@ class Collector(unittest.TestCase):
         path.write_text(f"#!{shutil.which('bash')}\n{script}\n")
         path.chmod(0o755)
 
-    def run_collector(self):
+    def run_collector(self, **env):
         p = subprocess.run([shutil.which("bash"), "-s"], input=fleetwatch.COLLECTOR, text=True,
-                           capture_output=True, env={"PATH": str(self.bin)})
+                           capture_output=True, env={"PATH": str(self.bin), **env})
         return dict(l.split("=", 1) for l in p.stdout.splitlines() if "=" in l)
 
     def test_tools_the_machine_lacks_are_skipped(self):
@@ -274,6 +293,115 @@ class Collector(unittest.TestCase):
         self.stub("uname", f"echo {self.PACKAGED.parent.name}")
         self.stub("pacman", 'echo "error: could not open database" >&2; exit 1')
         self.assertEqual(self.run_collector()["reboot"], "0")
+
+    def test_held_updates_are_listed_apart(self):
+        self.stub_timeout()
+        self.stub("checkupdates", 'echo "a 1 -> 2"')
+        self.stub("pacman", 'if [ "$1" = -Qu ]; then printf "a 1 -> 2\\nkernel-x 1 -> 2 [ignored]\\nb 1 -> 2 [ignored]\\n"; fi')
+        data = self.run_collector()
+        self.assertEqual((data["updates"], data["updates_list"]), ("1", "a 1 -> 2"))
+        self.assertEqual((data["held"], data["held_list"]), ("2", "kernel-x 1 -> 2;b 1 -> 2"))
+
+    def test_nothing_held_is_a_clean_answer(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 2")
+        self.stub("pacman", "exit 1")
+        data = self.run_collector()
+        self.assertEqual(data["held"], "0")
+        self.assertNotIn("held", data["unchecked"].split())
+
+    def test_failing_pacman_leaves_held_unchecked(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 2")
+        self.stub("pacman", 'echo "error: failed to initialize alpm library" >&2; exit 1')
+        data = self.run_collector()
+        self.assertNotIn("held", data)
+        self.assertIn("held", data["unchecked"].split())
+
+    def test_failing_checkupdates_says_nothing_of_held(self):
+        self.stub_timeout()
+        self.stub("checkupdates", "exit 1")
+        self.stub("pacman", 'echo "b 1 -> 2 [ignored]"')
+        data = self.run_collector()
+        self.assertNotIn("held", data)
+        self.assertNotIn("held", data["unchecked"].split())
+
+    def test_apt_holds_are_listed_apart(self):
+        self.stub("apt", 'printf "Listing...\\nbash/stable 5.2-1 arm64 [upgradable from: 5.1-1]\\n'
+                         'bashtop/stable 2-1 arm64 [upgradable from: 1-1]\\n"')
+        self.stub("apt-mark", 'echo bash')
+        data = self.run_collector()
+        self.assertEqual((data["updates"], data["updates_list"]), ("1", "bashtop/stable 2-1 arm64 [upgradable from: 1-1]"))
+        self.assertEqual((data["held"], data["held_list"]), ("1", "bash/stable 5.2-1 arm64 [upgradable from: 5.1-1]"))
+
+    def test_failing_apt_mark_leaves_held_unchecked(self):
+        self.stub("apt", 'printf "Listing...\\nbash/stable 5.2-1 arm64 [upgradable from: 5.1-1]\\n"')
+        self.stub("apt-mark", "exit 100")
+        data = self.run_collector()
+        self.assertEqual(data["updates"], "1")
+        self.assertNotIn("held", data)
+        self.assertIn("held", data["unchecked"].split())
+
+    def pacman_log(self, text):
+        log = self.bin / "pacman.log"
+        log.write_text(text)
+        self.stub("pacman", "exit 1")
+        self.stub("pacman-conf", f'[ "$1" = LogFile ] && echo {log}')
+        return self.run_collector()
+
+    def test_last_full_upgrade_that_upgraded(self):
+        data = self.pacman_log(
+            "[2026-01-02T10:00:00+0100] [PACMAN] Running 'pacstrap'\n"
+            "[2026-03-01T10:00:00+0100] [PACMAN] Running 'pacman -Syu'\n"
+            "[2026-03-01T10:00:00+0100] [PACMAN] starting full system upgrade\n"
+            "[2026-03-01T10:01:00+0100] [ALPM] transaction started\n"
+            "[2026-03-01T10:02:00+0100] [ALPM] transaction completed\n"
+            "[2026-03-09T10:00:00+0100] [PACMAN] Running 'pacman -Syu'\n"
+            "[2026-03-09T10:00:00+0100] [PACMAN] starting full system upgrade\n"
+            "[2026-03-10T10:00:00+0100] [PACMAN] Running 'pacman -S foo'\n"
+            "[2026-03-10T10:00:01+0100] [ALPM] transaction started\n"
+            "[2026-03-10T10:00:02+0100] [ALPM] transaction completed\n")
+        self.assertEqual(data["upgraded"], "2026-03-01T10:02:00+0100")
+        self.assertNotIn("log_start", data)
+        self.assertEqual(data["unchecked"], "")
+
+    def test_no_full_upgrade_gives_the_start_of_the_log(self):
+        data = self.pacman_log("[2026-01-02T10:00:00+0100] [PACMAN] Running 'pacstrap'\n"
+                               "[2026-01-02T10:00:01+0100] [ALPM] transaction completed\n")
+        self.assertEqual(data["log_start"], "2026-01-02T10:00:00+0100")
+        self.assertNotIn("upgraded", data)
+
+    def test_empty_or_missing_log_is_unchecked(self):
+        self.assertEqual(self.pacman_log("")["unchecked"].split(), ["upgraded"])
+        self.stub("pacman-conf", f"echo {self.bin / 'nowhere.log'}")
+        self.assertEqual(self.run_collector()["unchecked"].split(), ["upgraded"])
+
+    def test_last_apt_upgrade_across_rotated_logs(self):
+        self.stub("apt", 'echo "Listing..."')
+        self.stub("apt-mark", "true")
+        self.stub("date", 'echo +0100')
+        log = self.bin / "history.log"
+        older = (b"Start-Date: 2026-01-05  09:00:00\nCommandline: apt-get -y dist-upgrade\n"
+                 b"Upgrade: a (1, 2)\nEnd-Date: 2026-01-05  09:01:00\n")
+        (self.bin / "history.log.1.gz").write_bytes(subprocess.run(["gzip", "-c"], input=older, capture_output=True).stdout)
+        log.write_text("Start-Date: 2026-02-01  06:00:00\nCommandline: /usr/bin/unattended-upgrade\n"
+                       "Upgrade: b (1, 2)\nEnd-Date: 2026-02-01  06:01:00\n\n"
+                       "Start-Date: 2026-02-03  08:00:00\nCommandline: apt install --only-upgrade c\n"
+                       "Upgrade: c (1, 2)\nEnd-Date: 2026-02-03  08:01:00\n")
+        data = self.run_collector(APT_HISTORY=str(log))
+        self.assertEqual(data["upgraded"], "2026-01-05T09:00:00+0100")
+        log.write_text(log.read_text() + "\nStart-Date: 2026-02-09  08:00:00\nCommandline: apt upgrade\n"
+                       "Upgrade: d (1, 2)\nEnd-Date: 2026-02-09  08:01:00\n")
+        self.assertEqual(self.run_collector(APT_HISTORY=str(log))["upgraded"], "2026-02-09T08:00:00+0100")
+        (self.bin / "history.log.1.gz").unlink()
+        log.write_text("Start-Date: 2026-02-01  06:00:00\nCommandline: /usr/bin/unattended-upgrade\nEnd-Date: 2026-02-01  06:01:00\n")
+        self.assertEqual(self.run_collector(APT_HISTORY=str(log))["log_start"], "2026-02-01T06:00:00+0100")
+
+    def test_apt_without_a_history_is_unchecked(self):
+        self.stub("apt", 'echo "Listing..."')
+        self.stub("apt-mark", "true")
+        data = self.run_collector(APT_HISTORY=str(self.bin / "nowhere.log"))
+        self.assertEqual(data["unchecked"].split(), ["upgraded"])
 
     def test_apt_updates_are_listed(self):
         self.stub("apt", 'printf "Listing...\\nbash/stable 5.2-1 arm64 [upgradable from: 5.1-1]\\n"')
@@ -372,6 +500,45 @@ class Assess(unittest.TestCase):
         self.assertEqual(v["issues"], [{"severity": "warn", "text": "updates: 414 pending, +2 aur",
                                         "key": "updates", "until": "until you update"}])
 
+    def test_held_updates_warn_without_counting_towards_the_many(self):
+        v = self.status(updates="49", held="3", held_list="tailscale 1 -> 2;sudo 1 -> 2;linux-custom 1 -> 2")
+        [held] = v["issues"]
+        self.assertEqual(held["text"], "held updates waiting: tailscale 2, sudo 2, linux-custom 2")
+        self.assertRegex(held["key"], r"^held:[0-9a-f]{8}$")
+        self.assertEqual(held["until"], "until another held update comes")
+        self.assertEqual(v["cells"][5], ("49 +3 held", "warn"))
+
+    def test_a_new_held_version_is_a_new_warning(self):
+        key = lambda held_list: self.status(held="1", held_list=held_list)["issues"][0]["key"]
+        self.assertEqual(key("sudo 1 -> 2"), key("sudo 1 -> 2"))
+        self.assertNotEqual(key("sudo 1 -> 2"), key("sudo 1 -> 3"))
+        self.assertNotEqual(key("sudo 1 -> 2"), key("sudo 1 -> 2;tailscale 1 -> 2"))
+
+    def test_days_since_the_last_full_update(self):
+        v = self.status(upgraded=stamp(12))
+        self.assertEqual((v["status"], v["cells"][6]), ("ok", ("12d ago", None)))
+        self.assertEqual(self.status(upgraded=stamp(0))["cells"][6], ("today", None))
+        self.assertEqual(self.status()["cells"][6], ("-", "dim"))
+
+    def test_too_long_since_the_last_full_update_warns(self):
+        v = self.status(upgraded=stamp(34))
+        self.assertEqual(v["cells"][6], ("34d ago", "warn"))
+        self.assertEqual(v["issues"], [{"severity": "warn", "text": "last full update 34 days ago (you aim for every 30 days)",
+                                        "key": "age", "until": "until you update"}])
+        self.assertEqual(self.status({"update_every_days": 40}, upgraded=stamp(34))["status"], "ok")
+        self.assertEqual(self.status({"machine": {"desktop": {"update_every_days": 0}}}, upgraded=stamp(400))["status"], "ok")
+
+    def test_a_log_without_a_full_update_says_how_far_it_goes_back(self):
+        v = self.status(log_start=stamp(87))
+        self.assertEqual(v["cells"][6], (">87d ago", "warn"))
+        self.assertEqual(v["issues"][0]["text"], "no full update in the 87 days its log goes back (you aim for every 30 days)")
+        self.assertEqual(self.status(log_start=stamp(3))["status"], "ok")
+
+    def test_a_last_update_that_could_not_be_read_is_not_clean(self):
+        for v in (self.status(unchecked="upgraded"), self.status(upgraded="Jan 1st")):
+            self.assertEqual(v["cells"][6], ("?", "warn"))
+            self.assertEqual(v["issues"][0]["text"], "couldn't check: last update")
+
     def test_failed_units_are_bad(self):
         v = self.status(failed="a.service ", failed_user="b.service ")
         self.assertEqual(v["status"], "bad")
@@ -410,15 +577,15 @@ class PendingUpdates(unittest.TestCase):
     def test_pacman_lines_with_the_reboot_ones_first(self):
         m = {"updates_list": "firefox 1-1 -> 2-1;linux 6.1-1 -> 6.2-1;", "updates_aur_list": "yay-bin 1 -> 2;"}
         self.assertEqual(fleetwatch.pending_updates(m), [
-            {"name": "linux", "old": "6.1-1", "new": "6.2-1", "tag": "reboot"},
-            {"name": "firefox", "old": "1-1", "new": "2-1", "tag": ""},
-            {"name": "yay-bin", "old": "1", "new": "2", "tag": "aur"},
+            {"name": "linux", "old": "6.1-1", "new": "6.2-1", "tag": "reboot", "held": False},
+            {"name": "firefox", "old": "1-1", "new": "2-1", "tag": "", "held": False},
+            {"name": "yay-bin", "old": "1", "new": "2", "tag": "aur", "held": False},
         ])
 
     def test_apt_lines(self):
         m = {"updates_list": "bash/stable,now 2:5.2-1 arm64 [upgradable from: 2:5.1-1]"}
         self.assertEqual(fleetwatch.pending_updates(m),
-                         [{"name": "bash", "old": "2:5.1-1", "new": "2:5.2-1", "tag": ""}])
+                         [{"name": "bash", "old": "2:5.1-1", "new": "2:5.2-1", "tag": "", "held": False}])
 
     def test_reboot_packages(self):
         tagged = lambda name: fleetwatch.pending_updates({"updates_list": f"{name} 1 -> 2"})[0]["tag"] == "reboot"
@@ -433,6 +600,28 @@ class PendingUpdates(unittest.TestCase):
              "updates_aur_list": "linux-cachyos 7.2-1 -> 7.3-1", "kernels": "linux;linux-omarchy;linux-cachyos"}
         self.assertEqual([(u["name"], u["tag"]) for u in fleetwatch.pending_updates(m)],
                          [("linux-omarchy", "reboot"), ("linux-cachyos", "reboot"), ("linux-omarchy-headers", "")])
+
+    def test_held_updates_come_last_and_a_held_kernel_still_wants_a_reboot(self):
+        m = {"updates_list": "firefox 1-1 -> 2-1", "held_list": "tailscale 1 -> 2;linux-custom 1 -> 2",
+             "kernels": "linux-custom"}
+        self.assertEqual([(u["name"], u["tag"], u["held"]) for u in fleetwatch.pending_updates(m)],
+                         [("firefox", "", False), ("linux-custom", "reboot", True), ("tailscale", "", True)])
+
+    def test_the_view_lists_held_updates_apart(self):
+        v = fleetwatch.updates_view({"updates": "0", "held": "2", "held_list": "tailscale 1 -> 2;sudo 1 -> 2"})
+        self.assertEqual((v["list"], [u["name"] for u in v["held"]], v["held_more"]), ([], ["tailscale", "sudo"], 0))
+        self.assertEqual(v["issue"], "pending updates: none; held back on purpose: tailscale 1 -> 2, sudo 1 -> 2")
+        self.assertEqual(v["summary"], "2 held")
+        v = fleetwatch.updates_view({"updates": "12", "updates_aur": "2", "held": "1", "held_list": "sudo 1 -> 2"})
+        self.assertEqual(v["summary"], "12 +2 updates · 1 held")
+        self.assertEqual(fleetwatch.updates_view({"updates": "0"})["summary"], "")
+
+    def test_terminal_lists_held_updates_apart(self):
+        out = self.printed({**HEALTHY, "updates": "1", "updates_list": "firefox 1 -> 2",
+                            "held": "1", "held_list": "tailscale 1 -> 2"})
+        self.assertLess(out.index("firefox"), out.index("held back on purpose"))
+        self.assertLess(out.index("held back on purpose"), out.index("tailscale"))
+        self.assertIn("couldn't check held updates", self.printed({**HEALTHY, "unchecked": "held"}))
 
     def test_what_is_not_an_update_is_dropped(self):
         m = {"updates_list": "Ignore the guide;a\x1b[31m 1 -> 2;b 1\x1b]0;x -> 2;c 1 -> 2 [ignored]"}
@@ -451,8 +640,9 @@ class PendingUpdates(unittest.TestCase):
 
     def test_the_view_reaches_the_json(self):
         [m] = json.loads(fleetwatch.json_report([{**HEALTHY, "updates": "1", "updates_list": "a 1 -> 2"}], {}))
-        self.assertEqual(m["view"]["updates"], {"list": [{"name": "a", "old": "1", "new": "2", "tag": ""}],
-                                                "more": 0, "issue": "pending updates: a 1 -> 2"})
+        self.assertEqual(m["view"]["updates"], {"list": [{"name": "a", "old": "1", "new": "2", "tag": "", "held": False}],
+                                                "more": 0, "held": [], "held_more": 0,
+                                                "issue": "pending updates: a 1 -> 2", "summary": "1 updates"})
 
     def printed(self, *machines):
         out = io.StringIO()
@@ -511,6 +701,24 @@ class QuietedWarnings(ConfigDir):
         fleetwatch.forget_cleared([m], [self.view(**m)])
         self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates", "mem"}})
 
+    def test_a_new_held_update_forgets_the_old_one(self):
+        m = {**HEALTHY, "held": "1", "held_list": "sudo 1 -> 2"}
+        old = self.view(**m)["issues"][0]["key"]
+        self.quiet("desktop", old)
+        self.assertEqual(self.view(quieted={old}, **m)["status"], "ok")
+        m["held_list"] = "sudo 1 -> 3"
+        fleetwatch.forget_cleared([m], [self.view(**m)])
+        self.assertEqual(fleetwatch.read_quieted(), {})
+
+    def test_an_update_forgets_the_age_unless_it_is_unknown(self):
+        self.quiet("desktop", "age")
+        m = {**HEALTHY, "unchecked": "upgraded"}
+        fleetwatch.forget_cleared([m], [self.view(**m)])
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"age"}})
+        m = {**HEALTHY, "upgraded": stamp(1)}
+        fleetwatch.forget_cleared([m], [self.view(**m)])
+        self.assertEqual(fleetwatch.read_quieted(), {})
+
     def test_back_online_forgets_unreachable(self):
         self.quiet("desktop", "unreachable")
         fleetwatch.forget_cleared([HEALTHY], [self.view()])
@@ -523,6 +731,11 @@ class QuietedWarnings(ConfigDir):
         self.assertEqual(fleetwatch.read_quieted(), {})
         self.assertEqual(fleetwatch.main(["--dismiss-warning", "desktop", "updates"]), 0)
         self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates"}})
+        for key in ("held", "held:xyz", "held:0123456789"):
+            with mock.patch("sys.stderr"):
+                self.assertEqual(fleetwatch.main(["--dismiss-warning", "desktop", key]), 2, key)
+        self.assertEqual(fleetwatch.main(["--dismiss-warning", "desktop", "held:0123abcd"]), 0)
+        self.assertEqual(fleetwatch.read_quieted(), {"desktop": {"updates", "held:0123abcd"}})
 
 
 class FirstRun(ConfigDir):
@@ -609,7 +822,7 @@ class DismissedCrashes(ConfigDir):
         v = fleetwatch.assess(self.machine(self.old, self.new), {}, dismissed)
         self.assertEqual(v["status"], "warn")
         self.assertEqual(v["issues"][0]["crashes"], [fleetwatch.crash_id(self.new)])
-        self.assertEqual(v["cells"][7], ("1", "warn"))
+        self.assertEqual(v["cells"][8], ("1", "warn"))
 
     def test_dismissals_older_than_the_check_are_dropped(self):
         stale = f"{int((time.time() - 30 * 86400) * 1e6)}-1"

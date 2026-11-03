@@ -220,11 +220,15 @@ Panel {
     if (machine.error) return "unreachable"
     var parts = ["load " + column(machine, "LOAD"), "mem " + column(machine, "MEM"),
                  "disk " + column(machine, "DISK /").split(" ")[0]]
-    var updates = column(machine, "UPDATES")
-    // The reboot note in this column is also an issue line of its own.
-    updates = updates.replace(" aur", "").replace(", reboot", "")
-    if (updates !== "" && updates !== "0") parts.push(updates + " updates")
+    var summary = machine.view && machine.view.updates ? machine.view.updates.summary : ""
+    if (summary) parts.push(summary)
     return parts.join(" · ")
+  }
+
+  // "updated 12d ago · " ahead of the uptime; a "?" is an issue line instead.
+  function updatedText(machine) {
+    var updated = column(machine, "UPDATED")
+    return /ago$|^today$/.test(updated) ? "updated " + updated + " · " : ""
   }
 
   onOpenedChanged: {
@@ -442,7 +446,8 @@ Panel {
             required property var modelData
             readonly property var issues: modelData.view ? modelData.view.issues : []
             readonly property var updates: modelData.view ? modelData.view.updates : null
-            readonly property bool hasUpdates: !!updates && updates.list.length > 0
+            readonly property bool hasUpdates: !!updates && updates.list.length + updates.held.length > 0
+            readonly property int moreUpdates: updates ? updates.more + updates.held_more : 0
             readonly property bool expanded: hasUpdates && root.expandedLabel === modelData.label
 
             width: content.width
@@ -493,7 +498,8 @@ Panel {
 
                 Text {
                   textFormat: Text.PlainText
-                  text: machineRow.modelData.error ? "" : "up " + root.column(machineRow.modelData, "UP")
+                  text: machineRow.modelData.error ? ""
+                    : root.updatedText(machineRow.modelData) + "up " + root.column(machineRow.modelData, "UP")
                   color: root.dim(0.6)
                   font.family: root.bar.fontFamily
                   font.pixelSize: Style.font.caption
@@ -534,48 +540,67 @@ Panel {
                 width: parent.width
                 spacing: Style.space(2)
 
+                // The held ones come last, under a heading of their own.
                 Repeater {
-                  model: machineRow.expanded ? machineRow.updates.list : []
+                  model: machineRow.expanded ? machineRow.updates.list.concat(machineRow.updates.held) : []
 
-                  delegate: RowLayout {
+                  delegate: Column {
                     id: updateRow
                     required property var modelData
+                    required property int index
                     width: updateList.width
-                    spacing: Style.space(8)
+                    spacing: Style.space(2)
 
-                    // Fills only up to its text; the spacer takes what is left, so
-                    // the tag stays beside the name and the versions on the right.
                     Text {
-                      Layout.fillWidth: true
-                      Layout.maximumWidth: implicitWidth
+                      visible: updateRow.index === machineRow.updates.list.length
+                      topPadding: updateRow.index > 0 ? Style.space(4) : 0
                       leftPadding: Style.space(16)
                       textFormat: Text.PlainText
-                      text: updateRow.modelData.name
-                      color: root.barForeground
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                      elide: Text.ElideRight
-                    }
-
-                    Text {
-                      visible: updateRow.modelData.tag !== ""
-                      textFormat: Text.PlainText
-                      text: updateRow.modelData.tag
-                      color: updateRow.modelData.tag === "reboot" ? root.warnColor : root.dim(0.6)
-                      font.family: root.bar.fontFamily
-                      font.pixelSize: Style.font.caption
-                    }
-
-                    Item { Layout.fillWidth: true }
-
-                    Text {
-                      Layout.maximumWidth: updateList.width * 0.6
-                      textFormat: Text.PlainText
-                      text: updateRow.modelData.old + " → " + updateRow.modelData.new
+                      text: "Held back on purpose"
                       color: root.dim(0.6)
                       font.family: root.bar.fontFamily
                       font.pixelSize: Style.font.caption
-                      elide: Text.ElideMiddle
+                      font.bold: true
+                    }
+
+                    RowLayout {
+                      width: updateRow.width
+                      spacing: Style.space(8)
+
+                      // Fills only up to its text; the spacer takes what is left, so
+                      // the tag stays beside the name and the versions on the right.
+                      Text {
+                        Layout.fillWidth: true
+                        Layout.maximumWidth: implicitWidth
+                        leftPadding: Style.space(16)
+                        textFormat: Text.PlainText
+                        text: updateRow.modelData.name
+                        color: root.barForeground
+                        font.family: root.bar.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideRight
+                      }
+
+                      Text {
+                        visible: updateRow.modelData.tag !== ""
+                        textFormat: Text.PlainText
+                        text: updateRow.modelData.tag
+                        color: updateRow.modelData.tag === "reboot" ? root.warnColor : root.dim(0.6)
+                        font.family: root.bar.fontFamily
+                        font.pixelSize: Style.font.caption
+                      }
+
+                      Item { Layout.fillWidth: true }
+
+                      Text {
+                        Layout.maximumWidth: updateList.width * 0.6
+                        textFormat: Text.PlainText
+                        text: updateRow.modelData.old + " → " + updateRow.modelData.new
+                        color: root.dim(0.6)
+                        font.family: root.bar.fontFamily
+                        font.pixelSize: Style.font.caption
+                        elide: Text.ElideMiddle
+                      }
                     }
                   }
                 }
@@ -588,14 +613,14 @@ Panel {
                     Layout.fillWidth: true
                     leftPadding: Style.space(16)
                     textFormat: Text.PlainText
-                    text: machineRow.updates && machineRow.updates.more > 0 ? "+" + machineRow.updates.more + " more" : ""
+                    text: machineRow.moreUpdates > 0 ? "+" + machineRow.moreUpdates + " more" : ""
                     color: root.dim(0.6)
                     font.family: root.bar.fontFamily
                     font.pixelSize: Style.font.caption
                   }
 
                   PanelActionButton {
-                    visible: !!machineRow.updates && machineRow.updates.more > 0
+                    visible: machineRow.moreUpdates > 0
                     iconText: "󰆍"
                     tooltipText: "All of them in a terminal"
                     foreground: root.barForeground

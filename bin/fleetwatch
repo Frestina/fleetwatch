@@ -2,9 +2,10 @@
 """fleetwatch: one-screen health check of your machines.
 
 Runs a small collector script on each machine (locally for this one, over ssh
-for the rest) and prints a table: uptime, load, memory, disk, pending updates,
-reboot needed, failed systemd units and crashes in the last 7 days. An
-optional check of an SSH agent is switched on in the config file.
+for the rest) and prints a table: uptime, load, memory, disk, pending updates
+(held ones apart), reboot needed, days since the last full update, failed
+systemd units and crashes in the last 7 days. An optional check of an SSH
+agent is switched on in the config file.
 
 Your machines are listed in ~/.config/fleet/hosts, the list every Fleet tool
 shares (https://github.com/Frestina/fleet/blob/main/HOSTS.md), one per line:
@@ -16,11 +17,16 @@ or whose target is "local", runs
 locally, so the same file works from any of them. Everything else is reached
 with `ssh <target>`, so your ~/.ssh/config decides users, keys and ports.
 
-Optional settings go in ~/.config/fleet/watch/config.toml, as TOML strings:
+Optional settings go in ~/.config/fleet/watch/config.toml, in TOML:
 
     ssh_options = "-o IdentityAgent=none"    extra options for polling ssh
     agent_socket = "~/.ssh/agent.sock"       SSH agent to check on this machine
     forwarded_agent_socket = "~/.ssh/fwd.sock"   agent to check on the others
+    update_every_days = 30                    warn when the last full update
+                                              is older (0: never; the default
+                                              is 30)
+    [machine.server]                          a machine's own number of days
+    update_every_days = 60
 
 Polling never forwards your agent and never prompts (BatchMode), so a machine
 that needs a password or key approval shows as unreachable. A machine that is
@@ -76,6 +82,7 @@ prompt is never edited; remove the hostname there yourself.
 """
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -87,6 +94,7 @@ import sys
 import time
 import tomllib
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from pathlib import Path
 
 # The Fleet tools share the hosts file; each keeps its own files in fleet/<word>.
@@ -109,6 +117,9 @@ OFFLINE = re.compile(r"Connection timed out|Operation timed out|No route to host
                      r"Host is down|Could not resolve hostname|Name or service not known|"
                      r"Temporary failure in name resolution")
 CONFIG_KEYS = {"ssh_options", "agent_socket", "forwarded_agent_socket"}
+# Settings that are a number of days, and can be set per machine in a
+# [machine.<label>] table as well.
+DAYS_KEYS = {"update_every_days": 30}
 
 COLLECTOR = r"""
 export LC_ALL=C
@@ -160,6 +171,18 @@ if command -v checkupdates >/dev/null; then
 		2) kv updates 0 ;;
 		*) kv updates "?" ;;
 	esac
+	# checkupdates leaves out what pacman.conf holds back (IgnorePkg,
+	# IgnoreGroup). In the database it just synced, pacman tags those [ignored].
+	if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then
+		out=$(pacman -Qu --dbpath "${CHECKUPDATES_DB:-${TMPDIR:-/tmp}/checkup-db-$UID/}" 2>&1)
+		if printf '%s\n' "$out" | grep -q '^error:'; then
+			unchecked+="held "
+		else
+			out=$(printf '%s\n' "$out" | sed -n 's/ \[ignored\]$//p')
+			kv held "$(printf '%s' "$out" | grep -c .)"
+			kv held_list "$(joined "$out")"
+		fi
+	fi
 	if command -v yay >/dev/null; then
 		out=$(timeout 20 yay -Qua 2>/dev/null); rc=$?
 		if [ $rc -le 1 ]; then
@@ -174,8 +197,55 @@ if command -v checkupdates >/dev/null; then
 	kv kernels "$(joined "$(pacman -Qqo /usr/lib/modules/*/vmlinuz 2>/dev/null)")"
 elif command -v apt >/dev/null; then
 	out=$(apt list --upgradable 2>/dev/null | grep 'upgradable from')
+	# apt lists held packages with the rest; apt-mark names them.
+	if names=$(apt-mark showhold 2>/dev/null); then
+		pick() { printf '%s\n' "$out" | awk -v names="$names" -v want="$1" \
+			'BEGIN { n = split(names, h, "\n"); for (i = 1; i <= n; i++) held[h[i]] = 1 }
+			 NF { split($1, p, "/"); if ((p[1] in held) == want) print }'; }
+		held=$(pick 1)
+		out=$(pick 0)
+		kv held "$(printf '%s' "$held" | grep -c .)"
+		kv held_list "$(joined "$held")"
+	else
+		unchecked+="held "
+	fi
 	kv updates "$(printf '%s' "$out" | grep -c .)"
 	kv updates_list "$(joined "$out")"
+fi
+
+# The last full upgrade that installed something, as 2026-01-31T09:00:00+0100,
+# or when the log starts if it has none. On pacman, a "starting full system
+# upgrade" followed by a completed transaction: one that had nothing to do, or
+# failed, has none. On apt, `apt upgrade` and its kin, not unattended-upgrade.
+upgraded() {
+	if [ -n "$1" ]; then kv upgraded "$1"; elif [ -n "$2" ]; then kv log_start "$2"; else unchecked+="upgraded "; fi
+}
+if command -v pacman >/dev/null; then
+	log=$(pacman-conf LogFile 2>/dev/null); log=${log:-/var/log/pacman.log}
+	if [ -r "$log" ]; then
+		out=$(awk 'NR == 1 { print substr($1, 2, 24) }
+			/\[PACMAN\] Running/ { full = 0 }
+			/\[PACMAN\] starting full system upgrade/ { full = 1 }
+			full && /\[ALPM\] transaction completed/ { last = substr($1, 2, 24); full = 0 }
+			END { print last }' "$log")
+		upgraded "$(printf '%s\n' "$out" | sed -n 2p)" "$(printf '%s\n' "$out" | sed -n 1p)"
+	else
+		unchecked+="upgraded "
+	fi
+elif command -v apt >/dev/null; then
+	# Tests point APT_HISTORY elsewhere; the log rotates into .1.gz and on.
+	apt_log=${APT_HISTORY:-/var/log/apt/history.log}
+	if [ -r "$apt_log" ]; then
+		out=$(zcat -f "$apt_log"* 2>/dev/null | awk -v tz="$(date +%z)" '
+			/^Start-Date:/ { t = $2 "T" $3 tz; cmd = ""; if (first == "" || t < first) first = t }
+			/^Commandline:/ { cmd = $0 }
+			/^End-Date:/ && cmd ~ /^Commandline: ([^ ]*\/)?apt(-get)? ((-o|-c) [^ ]+ |-[^ ]+ )*(upgrade|full-upgrade|dist-upgrade)( |$)/ {
+				if (t > last) last = t }
+			END { print first; print last }')
+		upgraded "$(printf '%s\n' "$out" | sed -n 2p)" "$(printf '%s\n' "$out" | sed -n 1p)"
+	else
+		unchecked+="upgraded "
+	fi
 fi
 
 failed() {
@@ -265,8 +335,18 @@ def read_hosts():
     return hosts
 
 
+def check_days(where, table):
+    for key, value in table.items():
+        if key not in DAYS_KEYS:
+            raise ValueError(f"{CONFIG_FILE}: {key} is not a setting in {where}; expected "
+                             f"{', '.join(sorted(DAYS_KEYS))} = <days>")
+        if type(value) is not int or value < 0:
+            raise ValueError(f"{CONFIG_FILE}: {key} takes a number of days, 0 for off: {key} = 30")
+
+
 def read_config():
-    """The settings as a dict of strings."""
+    """The settings: strings, numbers of days, and "machine", the [machine.<label>]
+    tables of days."""
     try:
         with open(CONFIG_FILE, "rb") as f:
             config = tomllib.load(f)
@@ -275,10 +355,24 @@ def read_config():
     except tomllib.TOMLDecodeError as e:
         raise ValueError(f"{CONFIG_FILE}: {e}") from None
     for key, value in config.items():
-        if key not in CONFIG_KEYS or not isinstance(value, str):
+        if key in DAYS_KEYS:
+            check_days("the file", {key: value})
+        elif key == "machine" and isinstance(value, dict):
+            for label, table in value.items():
+                if not isinstance(table, dict):
+                    raise ValueError(f"{CONFIG_FILE}: machine.{label} is not a [machine.{label}] table")
+                check_days(f"[machine.{label}]", table)
+        elif key not in CONFIG_KEYS or not isinstance(value, str):
             raise ValueError(f'{CONFIG_FILE}: {key} is not a setting; expected one of '
-                             f'{", ".join(sorted(CONFIG_KEYS))} = "value"')
+                             f'{", ".join(sorted(CONFIG_KEYS))} = "value", '
+                             f'{", ".join(sorted(DAYS_KEYS))} = <days> or a [machine.<label>] table')
     return config
+
+
+def days_setting(config, key, label):
+    """A number of days for the machine `label`: its own, else everyone's, else
+    the default."""
+    return config.get("machine", {}).get(label, {}).get(key, config.get(key, DAYS_KEYS[key]))
 
 
 def shell_path(path):
@@ -352,8 +446,8 @@ def dismiss_warning(label, key):
 def forget_cleared(machines, views):
     """Forget a dismissed warning once a check finds it gone, so it shows the
     next time it comes back. An unreachable machine says nothing about its
-    other warnings, and an update count that couldn't be read is not an
-    update."""
+    other warnings, and an update count, held updates or a last update that
+    couldn't be read are not an update."""
     with state_lock():
         quieted = read_quieted()
         changed = False
@@ -361,8 +455,12 @@ def forget_cleared(machines, views):
             keys = quieted.get(m["label"])
             if not keys or "error" in m:
                 continue
-            kept = {k for k in keys if k in v["warnings"]
-                    or (k == "updates" and not m.get("updates", "?").isdigit())}
+            unknown = set(m.get("unchecked", "").split())
+            if not m.get("updates", "?").isdigit():
+                unknown |= {"updates", "held"}
+            if "upgraded" in unknown:
+                unknown.add("age")
+            kept = {k for k in keys if k in v["warnings"] or k.split(":")[0] in unknown}
             if kept != keys:
                 quieted[m["label"]], changed = kept, True
         if changed:
@@ -407,18 +505,23 @@ def collect_all(hosts, config):
 
 # --- assessing ----------------------------------------------------------------
 
-BASE_HEADERS = ["MACHINE", "UP", "LOAD", "MEM", "DISK /", "UPDATES", "FAILED", "CRASHES"]
+BASE_HEADERS = ["MACHINE", "UP", "LOAD", "MEM", "DISK /", "UPDATES", "UPDATED", "FAILED", "CRASHES"]
 # Columns whose problems cells() already spells out in details.
-EXPLAINED = {"UPDATES", "FAILED", "CRASHES"}
+EXPLAINED = {"UPDATES", "UPDATED", "FAILED", "CRASHES"}
 RANK = {"bad": 2, "warn": 1}
 # Warnings that can be dismissed until they clear, and what clearing means.
+# A held warning's key is "held:" and a hash of what is held, so a new held
+# update is a new warning.
 UNTIL = {"unreachable": "until it is reachable again", "reboot": "until the next reboot",
-         "updates": "until you update", "load": "until it clears", "mem": "until it clears",
-         "disk": "until it clears", "runtime": "until it clears", "agent": "until it clears",
-         "unchecked": "until it can be checked"}
+         "updates": "until you update", "age": "until you update", "held": "until another held update comes",
+         "load": "until it clears", "mem": "until it clears", "disk": "until it clears",
+         "runtime": "until it clears", "agent": "until it clears", "unchecked": "until it can be checked"}
+WARNING_KEY = re.compile(rf"({'|'.join(k for k in UNTIL if k != 'held')})|held:[0-9a-f]{{8}}")
 # What the collector's "unchecked" list names, as the issue spells it.
-UNCHECKED = {"runtime": "runtime dir", "failed": "failed units", "failed_user": "failed user units",
-             "crashes": "crashes"}
+UNCHECKED = {"runtime": "runtime dir", "held": "held updates", "upgraded": "last update",
+             "failed": "failed units", "failed_user": "failed user units", "crashes": "crashes"}
+# How the collector writes when the last full upgrade was.
+TIMESTAMP = "%Y-%m-%dT%H:%M:%S%z"
 # An update as checkupdates and yay print it, and as apt lists it. A line that
 # is neither is dropped, so what a machine sends can't carry anything else to
 # the terminal or the agent.
@@ -475,17 +578,25 @@ def cells(m, config, details, dismissed=()):
 
     upd = m.get("updates", "?")
     aur = m.get("updates_aur")
-    text = upd + (f" +{aur} aur" if aur not in (None, "0") else "")
+    held = m.get("held")
+    text = upd + (f" +{aur} aur" if aur not in (None, "0") else "") + (f" +{held} held" if held not in (None, "0") else "")
     reboot = m.get("reboot") == "1"
     if reboot:
         text += ", reboot"
         details.append(("warn", "running kernel was upgraded, reboot to load the new one", {"key": "reboot"}))
+    # Held updates don't count: they would keep it on right after an update.
     many = upd.isdigit() and int(upd) >= 50
     if many:
         details.append(("warn", f"updates: {upd} pending" + (f", +{aur} aur" if aur not in (None, "0") else ""),
                         {"key": "updates"}))
-    out.append((text, "warn" if reboot or many else
+    held_updates = [u for u in pending_updates(m) if u["held"]]
+    if held_updates:
+        details.append(("warn", "held updates waiting: " + ", ".join(f"{u['name']} {u['new']}" for u in held_updates),
+                        {"key": held_key(held_updates)}))
+    out.append((text, "warn" if reboot or many or held_updates else
                 "dim" if upd == "0" and aur in (None, "0") else None))
+
+    out.append(updated_cell(m, days_setting(config, "update_every_days", m["label"]), details, unchecked))
 
     failed = m.get("failed", "").split() + [f"{u} (user)" for u in m.get("failed_user", "").split()]
     unknown = not failed and {"failed", "failed_user"} & set(unchecked)
@@ -519,28 +630,74 @@ def cells(m, config, details, dismissed=()):
     return out
 
 
+def updated_cell(m, limit, details, unchecked):
+    """The UPDATED column: how long since the last full upgrade, and a warning
+    past `limit` days (0: never). Without one in the log, how long the log
+    goes back."""
+    stamp = m.get("upgraded") or m.get("log_start")
+    if not stamp:
+        return ("?", "warn") if "upgraded" in unchecked else ("-", "dim")
+    try:
+        days = max(0, int((time.time() - datetime.strptime(stamp, TIMESTAMP).timestamp()) // 86400))
+    except ValueError:
+        unchecked.append("upgraded")
+        return ("?", "warn")
+    over = 0 < limit < days
+    aim = f"you aim for every {limit} days" if limit > 1 else "you aim for every day"
+    if "upgraded" in m:
+        if over:
+            details.append(("warn", f"last full update {days} days ago ({aim})", {"key": "age"}))
+        return ("today" if days == 0 else f"{days}d ago", "warn" if over else None)
+    if over:
+        details.append(("warn", f"no full update in the {days} days its log goes back ({aim})", {"key": "age"}))
+    return (f">{days}d ago", "warn" if over else None)
+
+
+def held_key(updates):
+    """The held warning's key: a new held update, or a new version of one, makes
+    a new key, so a dismissed warning shows again."""
+    held = "\n".join(sorted(f"{u['name']} {u['new']}" for u in updates))
+    return "held:" + hashlib.sha256(held.encode()).hexdigest()[:8]
+
+
 def pending_updates(m):
-    """Every pending update as {name, old, new, tag}, the ones with the reboot
-    tag first. The tag is "reboot", "aur" or empty."""
+    """Every pending update as {name, old, new, tag, held}: those not held
+    first, and in each the ones with the reboot tag first. The tag is "reboot",
+    "aur" or empty."""
     found = []
     kernels = set(m.get("kernels", "").split(";")) - {""}
-    for key, tag in (("updates_list", ""), ("updates_aur_list", "aur")):
+    for key, tag, held in (("updates_list", "", False), ("updates_aur_list", "aur", False),
+                           ("held_list", "", True)):
         for line in m.get(key, "").split(";"):
             match = PACMAN_UPDATE.match(line) or APT_UPDATE.match(line)
             if match:
                 reboot = REBOOT_PACKAGES.fullmatch(match["name"]) or match["name"] in kernels
-                found.append({**match.groupdict(), "tag": "reboot" if reboot else tag})
-    return sorted(found, key=lambda u: u["tag"] != "reboot")
+                found.append({**match.groupdict(), "tag": "reboot" if reboot else tag, "held": held})
+    return sorted(found, key=lambda u: (u["held"], u["tag"] != "reboot"))
 
 
 def updates_view(m):
-    """The popup's list: the first few updates, how many more there are, and
-    the same as text to hand the agent."""
+    """The popup's lists: the first few updates and the first few held ones,
+    how many more of each there are, the same as text to hand the agent, and
+    the summary for the stats line."""
     updates = pending_updates(m)
-    shown, more = updates[:UPDATES_SHOWN], max(0, len(updates) - UPDATES_SHOWN)
-    listed = ", ".join(f"{u['name']} {u['old']} -> {u['new']}" for u in shown)
-    return {"list": shown, "more": more,
-            "issue": f"pending updates: {listed}" + (f", +{more} more" if more else "")}
+
+    def first(held):
+        some = [u for u in updates if u["held"] == held]
+        return some[:UPDATES_SHOWN], max(0, len(some) - UPDATES_SHOWN)
+
+    def listed(shown, more):
+        return ", ".join(f"{u['name']} {u['old']} -> {u['new']}" for u in shown) + (f", +{more} more" if more else "")
+
+    (shown, more), (held, held_more) = first(False), first(True)
+    issue = f"pending updates: {listed(shown, more) or 'none'}"
+    if held:
+        issue += f"; held back on purpose: {listed(held, held_more)}"
+    upd, aur, held_count = m.get("updates", "?"), m.get("updates_aur"), m.get("held")
+    normal = upd + (f" +{aur}" if aur not in (None, "0") else "")
+    summary = ([f"{normal} updates"] if normal != "0" else []) + ([f"{held_count} held"] if held_count not in (None, "0") else [])
+    return {"list": shown, "more": more, "held": held, "held_more": held_more, "issue": issue,
+            "summary": " · ".join(summary)}
 
 
 def agent_cell(m):
@@ -575,7 +732,7 @@ def assess(m, config, dismissed=(), quieted=()):
     warnings = {i["key"] for i in issues if i["severity"] == "warn" and "key" in i}
     for i in issues:
         if i["severity"] == "warn" and "key" in i:
-            i["until"] = UNTIL[i["key"]]
+            i["until"] = UNTIL[i["key"].split(":")[0]]
     issues = [i for i in issues if not (i["severity"] == "warn" and i.get("key") in quieted)]
     details = [d for d in details
                if not (d[0] == "warn" and len(d) > 2 and d[2].get("key") in quieted)]
@@ -631,11 +788,13 @@ def render_updates(machines):
             continue
         updates = pending_updates(m)
         width = max((len(u["name"]) for u in updates), default=0)
-        for u in updates:
+        for n, u in enumerate(updates):
+            if u["held"] and (n == 0 or not updates[n - 1]["held"]):
+                print("  " + paint("held back on purpose (IgnorePkg or apt-mark hold):", "dim"))
             tag = paint("  " + u["tag"], "warn" if u["tag"] == "reboot" else "dim") if u["tag"] else ""
             print(f"  {u['name'].ljust(width)}  {u['old']} -> {u['new']}{tag}")
         unknown = [what for what, count in (("updates", m.get("updates", "?")), ("AUR updates", m.get("updates_aur", "0")))
-                   if not count.isdigit()]
+                   if not count.isdigit()] + (["held updates"] if "held" in m.get("unchecked", "").split() else [])
         for what in unknown:
             print("  " + paint(f"couldn't check {what}", "warn"))
         if not updates and not unknown:
@@ -916,9 +1075,9 @@ def main(argv):
         return 0
     if "--dismiss-warning" in argv:
         args = argv[argv.index("--dismiss-warning") + 1:]
-        if len(args) != 2 or not args[0] or args[1] not in UNTIL:
-            print(f"fleetwatch: --dismiss-warning takes a machine's label and one of {', '.join(UNTIL)}",
-                  file=sys.stderr)
+        if len(args) != 2 or not args[0] or not WARNING_KEY.fullmatch(args[1]):
+            print(f"fleetwatch: --dismiss-warning takes a machine's label and one of "
+                  f"{', '.join(k for k in UNTIL if k != 'held')} or held:<hash>", file=sys.stderr)
             return 2
         dismiss_warning(*args)
         return 0

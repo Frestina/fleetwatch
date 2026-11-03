@@ -7,7 +7,9 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
 
 - Reads `~/.config/fleet/hosts`, shared by the Fleet tools in the format of
   Fleet's HOSTS.md, and `~/.config/fleet/watch/config.toml`, parsed with
-  `tomllib` (`$XDG_CONFIG_HOME` is honoured). Every run first creates
+  `tomllib` (`$XDG_CONFIG_HOME` is honoured). Its settings are strings, except
+  `DAYS_KEYS`, numbers of days that a `[machine.<label>]` table can set for one
+  machine (`days_setting()`). Every run first creates
   whichever is missing, with `open(…, "x")` so an existing file is never
   replaced: `hosts` from `examples/hosts` plus a line for this machine,
   `config.toml` as `examples/config.toml`.
@@ -31,8 +33,25 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   `REBOOT_PACKAGES` first and tags them, along with the packages a pacman
   machine reports as its kernels (`kernels`, the owners of
   `/usr/lib/modules/*/vmlinuz`), so any flavour is tagged. `updates_view()`
-  gives the popup the first `UPDATES_SHOWN`. `--updates [LABEL...]` prints all
-  of them in place of the table.
+  gives the popup the first `UPDATES_SHOWN`, and the stats line's `summary`.
+  `--updates [LABEL...]` prints all of them in place of the table.
+- Held updates (`held`, `held_list`) come apart from the rest. `checkupdates`
+  drops every `pacman -Qu` line with a `[…]` suffix, held ones included, so
+  the collector runs `pacman -Qu` on the database `checkupdates` just synced and
+  keeps the lines tagged `[ignored]`. Pacman decides those itself, so globs in
+  `IgnorePkg` and `IgnoreGroup` need nothing here. On apt, `apt list
+  --upgradable` includes held packages, and `apt-mark showhold` picks them out.
+  They don't count towards the 50 of `updates`. Their warning's key is `held:`
+  and a hash of the held names and new versions (`held_key()`), so a new held
+  update is a new warning and the old key is forgotten.
+- `upgraded` is when the last full upgrade that installed something was: on
+  pacman a `starting full system upgrade` with an `[ALPM] transaction
+  completed` before the next `[PACMAN] Running` (one with nothing to do, or
+  that failed, has none). On apt, a `history.log*` block whose command is
+  `apt`/`apt-get` `upgrade`, `full-upgrade` or `dist-upgrade`. Without one,
+  `log_start` is when the log begins. Both are `%Y-%m-%dT%H:%M:%S%z`; apt's
+  local times get the machine's `date +%z`. `updated_cell()` makes the UPDATED
+  column and the `age` warning past `update_every_days`.
 - `reboot=1` when the running kernel's modules dir is gone (Arch), Debian's
   `/var/run/reboot-required` exists, or pacman says no package owns a modules
   dir that has a `pkgbase` file. That last one is Omarchy's
@@ -99,8 +118,11 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   `expandedLabel`, held on the root so a refresh keeps the list open and one
   machine shows at a time; closing the popup clears it. The arrow, the terminal
   and agent buttons under the list sit above the row's ssh `MouseArea`, so they
-  don't open ssh. The terminal button runs `--updates <label>` through `less`,
-  the agent button `--ask-agent <label>` with `view.updates.issue`.
+  don't open ssh. One repeater shows `list` then `held`, and the first held
+  row carries the "Held back on purpose" heading. The terminal button runs
+  `--updates <label>` through `less`, the agent button `--ask-agent <label>`
+  with `view.updates.issue`. The caption before the uptime takes the UPDATED
+  column when it reads as a time ("updated 12d ago").
 - A crash issue carries its crash ids
   (`<time>-<pid>`); its dismiss button (a broom) runs `--dismiss-crashes <label> <ids…>`, which adds
   exactly those to `~/.local/state/fleet/watch/dismissed-crashes.json`.
@@ -110,7 +132,7 @@ Two parts with one rule: `bin/fleetwatch` decides, `Fleetwatch.qml` displays.
   list always means nothing is wrong. `collect()` takes a report without that
   line as cut off and reports an error, and `cells()` shows `?` and a
   `couldn't check` warning for what it names.
-- A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `load`,
+- A warning issue carries a `key` (`unreachable`, `reboot`, `updates`, `age`, `held:<hash>`, `load`,
   `mem`, `disk`, `runtime`, `unchecked`, `agent`) and an `until` for its dismiss button's tooltip. The button runs
   `--dismiss-warning <label> <key>`, which adds the key to
   `dismissed-warnings.json`; `assess()` then leaves that warning out while it

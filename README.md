@@ -32,9 +32,9 @@ editor, can hand the setup to your coding agent, and uninstalls the plugin.
 
 When a machine has updates pending, the arrow at the end of its stats line
 lists them under it with their versions, those that usually want a reboot
-first, and the agent button there asks whether to update now or wait. A long
-list shows the first 8, and the terminal button there, or `fleetwatch --updates
-<label>`, shows the rest.
+first and the ones you hold back after them, and the agent button there asks
+whether to update now or wait. A long list shows the first 8, and the terminal
+button there, or `fleetwatch --updates <label>`, shows the rest.
 
 Every issue in the popup has an agent button. It starts your default coding
 agent (`omarchy agent`) with the machine, the issue and
@@ -56,14 +56,17 @@ like to change, instead of going through the setup again.
 | Disk `/` | 80% full (90% is shown as a problem) |
 | Runtime dir | `/run/user/<uid>` is 80% full (90% is shown as a problem). It has no column and only shows as an issue. It is the runtime dir of the user Fleetwatch logs in as, so a machine you reach as `root@server` shows root's. |
 | Updates | 50 or more pending, or the running kernel was upgraded and needs a reboot (pacman with `checkupdates`, `yay` for AUR, or apt) |
+| Held updates | any update of a package you hold back on purpose (`IgnorePkg` or `IgnoreGroup` in `pacman.conf`, or `apt-mark hold`). A full update skips them, so they are listed apart, as `+3 held`, and don't count towards the 50. Once you have seen them, dismiss them with the broom; a new version shows again. |
+| Updated | the last full system update is older than 30 days, or the days you set in [settings](#optional-settings). On pacman, a `pacman -Syu` that installed something, from `/var/log/pacman.log`; on apt, `apt upgrade`, `full-upgrade` or `dist-upgrade` from `/var/log/apt/history.log`, but not `unattended-upgrade`, which installs only security fixes. With none in the log, it counts from when the log starts. |
 | Failed units | any failed systemd unit, system or user |
 | Crashes | any core dump in the last 7 days (`coredumpctl`). Once you have looked into them, dismiss them with the broom on their line in the popup; only crashes after that show. |
 | Agent | optional, see [settings](#optional-settings) |
 
 A check that could not run is never shown as clean. If `systemctl` or
-`coredumpctl` is there but fails, or the size of the runtime dir can't be read,
-the column shows `?` and the machine gets a `couldn't check` warning. A machine
-that doesn't have the tool, or has no runtime dir, skips that check.
+`coredumpctl` is there but fails, the size of the runtime dir can't be read,
+the held updates can't be listed or the package log can't be read, the column
+shows `?` and the machine gets a `couldn't check` warning. A machine that
+doesn't have the tool, or has no runtime dir, skips that check.
 
 A machine that cannot be reached within a few seconds shows as unreachable,
 with the ssh error. When it looks off or out of reach (the connection times
@@ -73,11 +76,12 @@ won't let Fleetwatch in (a refused connection, a key it doesn't accept, a host
 key that doesn't verify), that is a problem.
 
 Every warning has a broom in the popup that dismisses it until it clears: the
-updates until you have updated, a reboot note until the next reboot, a machine
-that is off until it is reachable again, high load, memory, disk or runtime dir
-until they are back to normal, a check that couldn't run until it can. The next
-time it comes back, it shows again. Problems in
-red can't be dismissed, and a dismissed warning that becomes one shows anyway.
+updates and the days since the last full update until you have updated, held
+updates until another one comes, a reboot note until the next reboot, a
+machine that is off until it is reachable again, high load, memory, disk or
+runtime dir until they are back to normal, a check that couldn't run until it
+can. The next time it comes back, it shows again. Problems in red can't be
+dismissed, and a dismissed warning that becomes one shows anyway.
 
 ## Requirements
 
@@ -143,13 +147,23 @@ Open them with **Settings** at the bottom of the popup, and remove the `#` in
 front of a setting to turn it on. They are kept in
 `~/.config/fleet/watch/config.toml`, as in
 [examples/config.toml](examples/config.toml). Values are TOML strings, in
-quotes: `ssh_options = "-o IdentityAgent=none"`.
+quotes: `ssh_options = "-o IdentityAgent=none"`, except a number of days,
+which is a number: `update_every_days = 30`.
 
 | Setting | Effect |
 | --- | --- |
 | `ssh_options` | Extra options for the polling ssh connections, for example `-o IdentityAgent=none` to keep a password manager's agent from asking for approval on every check. |
 | `agent_socket` | Adds an AGENT column: whether this agent is running and unlocked on this machine. |
 | `forwarded_agent_socket` | On the other machines: whether an ssh session has forwarded your agent there right now. |
+| `update_every_days` | Warn when a machine's last full update is older than this many days (30 when not set; `0` switches it off). |
+
+A machine can have its own number of days, in a table named after its label
+in the hosts file:
+
+```toml
+[machine.homeserver]
+update_every_days = 0
+```
 
 The refresh interval (10 minutes by default) is a widget setting in the bar
 settings.

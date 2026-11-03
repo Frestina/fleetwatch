@@ -12,3 +12,13 @@
 # On the other machines: a socket where an ssh session forwards your agent,
 # to see which machines you are currently logged in to with your keys.
 # forwarded_agent_socket = "~/.ssh/agent/forwarded.sock"
+
+# Warn when a machine's last full system update (pacman -Syu, which
+# omarchy update runs, or apt upgrade) is older than this many days. A number,
+# not in quotes. 0 switches the warning off. 30 when not set.
+# update_every_days = 30
+
+# A machine's own number of days, by its label in the hosts file, for one you
+# update less often or never by hand.
+# [machine.homeserver]
+# update_every_days = 0
