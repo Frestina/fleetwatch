@@ -331,8 +331,21 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.needAttention.length > 0 && !vertical ? "󰒋 " + root.needAttention.length : "󰒋"
-    slotSize: Style.bar.iconSlot * (root.needAttention.length > 0 && !vertical ? 1.6 : 1)
+    // The count beside the glyph, on a horizontal bar; a vertical one has no
+    // room, and the tooltip says it. From Omarchy 4.5.0 the count goes in
+    // labelText, as the battery's percentage does: the shell fits all of
+    // text into one icon's box, so a count there would shrink the glyph with
+    // it. An older shell has no labelText, and draws text at its own size,
+    // so there the count stays in text. Assigning labelText where it does
+    // not exist would fail the whole icon, hence the check.
+    readonly property string countText: root.needAttention.length > 0 && !vertical
+      ? String(root.needAttention.length) : ""
+    readonly property bool hasLabel: "labelText" in button
+    text: countText !== "" && !hasLabel ? "󰒋 " + countText : "󰒋"
+    Component.onCompleted: {
+      if (hasLabel) button.labelText = Qt.binding(function() { return button.countText })
+    }
+    slotSize: Style.bar.iconSlot * (countText !== "" ? 1.1 + 0.5 * countText.length : 1)
     active: root.urgent
     // Dim while only this machine is listed; with others it stays in full.
     dimmed: !root.hasRemote && !root.urgent && root.needAttention.length === 0 && root.error === ""
